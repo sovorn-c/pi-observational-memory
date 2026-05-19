@@ -1,9 +1,10 @@
-import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { registerStatusCommand } from "./commands/status.js";
 import { registerViewCommand } from "./commands/view.js";
 import { registerCompactionHook } from "./hooks/compaction-hook.js";
 import { registerCompactionTrigger } from "./hooks/compaction-trigger.js";
 import { registerObserverTrigger } from "./hooks/observer-trigger.js";
+import { registerReflectDropTrigger } from "./hooks/reflect-drop-trigger.js";
 import { Runtime } from "./runtime.js";
 import { registerRecallTool } from "./tools/recall-observation.js";
 
@@ -11,6 +12,7 @@ export default function observationalMemory(pi: ExtensionAPI) {
 	const runtime = new Runtime();
 
 	registerObserverTrigger(pi, runtime);
+	registerReflectDropTrigger(pi, runtime);
 	registerCompactionTrigger(pi, runtime);
 	registerCompactionHook(pi, runtime);
 

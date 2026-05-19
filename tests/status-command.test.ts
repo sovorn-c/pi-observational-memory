@@ -1,43 +1,22 @@
 import { describe, expect, it, vi } from "vitest";
 
 import { registerStatusCommand } from "../src/commands/status.js";
-import { observationPoolTokens } from "../src/compaction.js";
-import type { MemoryDetailsV4, ObservationRecord, ReflectionRecord } from "../src/types.js";
-import { compactionEntry, messageEntry } from "./fixtures/session.js";
+import {
+	compactionEntry,
+	memoryDetails,
+	observation,
+	observationsDroppedEntry,
+	observationsRecordedEntry,
+	oldV2CompactionDetails,
+	oldV2ObservationEntry,
+	reflection,
+	reflectionsRecordedEntry,
+	textCustomMessage,
+	type TestEntry,
+} from "./fixtures/session.js";
 
-const committedObservation = {
-	id: "abc123def456",
-	content: "User confirmed exact source ids are required.",
-	timestamp: "2026-05-02 10:00",
-	relevance: "high",
-} satisfies ObservationRecord;
-
-const reflectionRecord = {
-	id: "111111111111",
-	content: "abcd",
-	supportingObservationIds: [committedObservation.id],
-} satisfies ReflectionRecord;
-
-const legacyReflection = "abcdefgh";
-
-const migratedLegacyReflectionRecord = {
-	id: "222222222222",
-	content: "abcdefghijkl",
-	supportingObservationIds: [],
-	legacy: true,
-} satisfies ReflectionRecord;
-
-function memoryDetailsV4(): MemoryDetailsV4 {
-	return {
-		type: "observational-memory",
-		version: 4,
-		observations: [committedObservation],
-		reflections: [legacyReflection, reflectionRecord, migratedLegacyReflectionRecord],
-	};
-}
-
-async function runStatus(details: MemoryDetailsV4): Promise<string> {
-	let handler: ((args: string[], ctx: unknown) => Promise<void>) | undefined;
+function setup(args: { entries: TestEntry[]; runtime?: Partial<any> }) {
+	let handler: ((args: unknown, ctx: any) => Promise<void>) | undefined;
 	const pi = {
 		registerCommand: vi.fn((name: string, command: { handler: typeof handler }) => {
 			expect(name).toBe("om-status");
@@ -47,50 +26,110 @@ async function runStatus(details: MemoryDetailsV4): Promise<string> {
 	const runtime = {
 		ensureConfig: vi.fn(),
 		config: {
-			observationThresholdTokens: 1000,
-			compactionThresholdTokens: 50000,
-			reflectionThresholdTokens: 30000,
+			observeAfterTokens: 10,
+			reflectAfterTokens: 20,
+			compactAfterTokens: 30,
+			observationsPoolMaxTokens: 40,
 			passive: false,
 		},
 		observerInFlight: false,
+		reflectDropInFlight: false,
 		compactInFlight: false,
+		compactHookInFlight: false,
+		lastObserverError: undefined,
+		lastReflectDropError: undefined,
+		...args.runtime,
 	};
-	registerStatusCommand(pi as never, runtime as never);
-	if (!handler) throw new Error("om-status handler was not registered");
-
+	registerStatusCommand(pi as any, runtime as any);
+	if (!handler) throw new Error("status handler not registered");
 	const notify = vi.fn();
-	await handler([], {
-		cwd: process.cwd(),
-		sessionManager: {
-			getBranch: vi.fn(() => [
-				messageEntry({ id: "source-user", message: { role: "user", content: "source" } }),
-				compactionEntry({ id: "compaction-current", firstKeptEntryId: "source-user", details }),
-			]),
-		},
-		ui: { notify },
-	});
-
-	const [[message, level]] = notify.mock.calls;
-	expect(level).toBe("info");
-	return message;
+	const ctx = { cwd: "/tmp/project", ui: { notify }, sessionManager: { getBranch: () => args.entries } };
+	const run = async () => {
+		await handler!(undefined, ctx);
+		return notify.mock.calls.at(-1)?.[0] as string;
+	};
+	return { run, notify };
 }
 
-describe("/om-status", () => {
-	it("counts structured and migrated legacy reflection tokens using reflection content", async () => {
-		const output = await runStatus(memoryDetailsV4());
+describe("V3 /om-status", () => {
+	it("renders concise no-memory status without V2 committed/pending language", async () => {
+		const output = await setup({ entries: [] }).run();
 
-		expect(output).toContain("Reflections:   ~6 tokens (3 entries)");
-		expect(output).not.toContain("[object Object]");
-		expect(output).not.toContain("NaN");
-		expect(output).not.toContain("legacy");
-		expect(output).not.toContain("supportingObservationIds");
+		expect(output).toContain("── Memory ──");
+		expect(output).toContain("Observations: 0 active / 0 dropped");
+		expect(output).toContain("Reflections:  0");
+		expect(output).toContain("Next observation:");
+		expect(output).toContain("Next compaction:");
+		expect(output).not.toContain("committed");
+		expect(output).not.toContain("pending");
 	});
 
-	it("counts observation tokens from rendered observation lines", async () => {
-		const output = await runStatus(memoryDetailsV4());
-		const renderedObsTokens = observationPoolTokens([committedObservation]);
+	it("reports V3 ledger counts, visible/full drift, and ignores old V2 memory", async () => {
+		const obsA = observation("aaaaaaaaaaaa", { tokenCount: 5 });
+		const obsB = observation("bbbbbbbbbbbb", { tokenCount: 7 });
+		const ref = reflection("eeeeeeeeeeee", ["bbbbbbbbbbbb"], { tokenCount: 3 });
+		const entries = [
+			textCustomMessage("raw-1", "aaaa"),
+			oldV2ObservationEntry("v2-obs"),
+			compactionEntry("cmp-v2", { firstKeptEntryId: "raw-1", details: oldV2CompactionDetails() }),
+			compactionEntry("cmp-visible", { firstKeptEntryId: "raw-1", details: memoryDetails({ observations: [obsA], reflections: [] }) }),
+			observationsRecordedEntry("om-obs", { observations: [obsA, obsB], coversUpToId: "raw-1" }),
+			reflectionsRecordedEntry("om-ref", { reflections: [ref], coversUpToId: "om-obs" }),
+			observationsDroppedEntry("om-drop", { observationIds: ["aaaaaaaaaaaa"], coversUpToId: "om-ref" }),
+		];
 
-		expect(output).toContain(`committed    ~${renderedObsTokens.toLocaleString()} tokens (1 observation)`);
-		expect(output).toContain(`Next reflection:  ~${renderedObsTokens.toLocaleString()} / ${(30000).toLocaleString()} tokens`);
+		const output = await setup({ entries }).run();
+
+		expect(output).toContain("Observations: 1 active / 1 dropped");
+		expect(output).toContain("Reflections:  1");
+		expect(output).toContain("Visible:      1 observations, 0 reflections");
+		expect(output).toContain("Drift:        +1 observations, +1 reflections, 1 visible observations dropped in full truth");
+		expect(output).not.toContain("v2-obs");
+		expect(output).not.toContain("observational-memory");
+	});
+
+	it("shows separate progress clocks and full-fold pool pressure", async () => {
+		const obs = observation("aaaaaaaaaaaa", { tokenCount: 5 });
+		const entries = [
+			textCustomMessage("raw-1", "aaaaaaaa"),
+			observationsRecordedEntry("om-obs", { observations: [obs], coversUpToId: "raw-1" }),
+			textCustomMessage("raw-2", "bbbbbbbb"),
+			compactionEntry("cmp", { firstKeptEntryId: "raw-2", details: memoryDetails({ observations: [obs] }) }),
+		];
+
+		const output = await setup({ entries }).run();
+
+		expect(output).toContain("Next observation:");
+		expect(output).toContain("/ 10 tokens");
+		expect(output).toContain("Next reflection:");
+		expect(output).toContain("/ 20 tokens");
+		expect(output).toContain("Next drop:");
+		expect(output).toContain("Next compaction:");
+		expect(output).toContain("/ 30 tokens");
+		expect(output).toContain("Full fold pool:");
+		expect(output).toContain("/ 40 visible observation tokens");
+	});
+
+	it("shows passive mode, workers in flight, and last errors", async () => {
+		const output = await setup({
+			entries: [],
+			runtime: {
+				config: { observeAfterTokens: 10, reflectAfterTokens: 20, compactAfterTokens: 30, observationsPoolMaxTokens: 40, passive: true },
+				observerInFlight: true,
+				reflectDropInFlight: true,
+				compactInFlight: true,
+				compactHookInFlight: true,
+				lastObserverError: "observer failed",
+				lastReflectDropError: "drop failed",
+			},
+		}).run();
+
+		expect(output).toContain("Passive: automatic memory workers and auto-compaction disabled");
+		expect(output).toContain("Observer: running");
+		expect(output).toContain("Reflect/drop: running");
+		expect(output).toContain("Auto-compaction: running");
+		expect(output).toContain("Compaction hook: running");
+		expect(output).toContain("Observer: observer failed");
+		expect(output).toContain("Reflect/drop: drop failed");
 	});
 });

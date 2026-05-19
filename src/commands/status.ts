@@ -1,104 +1,80 @@
-import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
-import { SettingsManager } from "@mariozechner/pi-coding-agent";
-import {
-	getMemoryState,
-	rawTokensSinceLastBound,
-	rawTokensSinceLastCompaction,
-} from "../branch.js";
-import { observationPoolTokens as estimateObservationPoolTokens } from "../compaction.js";
-import { countByRelevance, formatRelevanceHistogram } from "../relevance.js";
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import type { Runtime } from "../runtime.js";
-import { estimateStringTokens } from "../tokens.js";
-import { reflectionContent, type MemoryReflection } from "../types.js";
+import {
+	diffProjection,
+	foldLedger,
+	fullProjection,
+	rawTokensSinceDropCoverage,
+	rawTokensSinceLastCompaction,
+	rawTokensSinceObservationCoverage,
+	rawTokensSinceReflectionCoverage,
+	visibleProjection,
+	type Entry,
+} from "../session-ledger/index.js";
+
+function pct(current: number, total: number): number {
+	return total > 0 ? Math.min(100, Math.round((current / total) * 100)) : 0;
+}
+
+function tokenSum(items: { tokenCount: number }[]): number {
+	return items.reduce((sum, item) => sum + item.tokenCount, 0);
+}
 
 export function registerStatusCommand(pi: ExtensionAPI, runtime: Runtime): void {
 	pi.registerCommand("om-status", {
 		description: "Show observational memory status",
 		handler: async (_args, ctx) => {
 			runtime.ensureConfig(ctx.cwd);
-			const entries = ctx.sessionManager.getBranch() as Parameters<typeof rawTokensSinceLastBound>[0];
-			const sinceBound = rawTokensSinceLastBound(entries);
-			const sinceCompaction = rawTokensSinceLastCompaction(entries);
+			const entries = ctx.sessionManager.getBranch() as Entry[];
+			const folded = foldLedger(entries);
+			const visible = visibleProjection(entries);
+			const full = fullProjection(entries);
+			const drift = diffProjection(visible, full);
 
-			const { reflections: committedRefs, committedObs, pendingObs } = getMemoryState(entries);
-			const committedRefItems = committedRefs as MemoryReflection[];
-			const committedObsTokens = estimateObservationPoolTokens(committedObs);
-			const committedObsCount = committedObs.length;
-			const committedRefsTokens = committedRefItems.reduce((s, r) => s + estimateStringTokens(reflectionContent(r)), 0);
-			const committedRefsCount = committedRefItems.length;
-
-			const pendingObsTokens = estimateObservationPoolTokens(pendingObs);
-			const pendingObsCount = pendingObs.length;
-
-			const relevanceHistogram = countByRelevance([...committedObs, ...pendingObs]);
-
-			const keepRecentTokens = SettingsManager.create(ctx.cwd).getCompactionKeepRecentTokens();
-
-			const obsThreshold = runtime.config.observationThresholdTokens;
-			const compThreshold = runtime.config.compactionThresholdTokens;
-			const refThreshold = runtime.config.reflectionThresholdTokens;
-			// Approximation: the real compaction gate excludes pending obs whose coversFromId falls inside
-			// the new keep-recent tail (deferred to next cycle) and adds any sync-catch-up gap obs produced
-			// at compaction entry. We over-count by the tail slice and can't predict the gap obs here.
-			// Precise version would simulate the new firstKeptEntryId by walking back keepRecentTokens from
-			// the branch tail and split pending into pre-tail vs tail-covering.
-			const observationPoolTokens = estimateObservationPoolTokens([...committedObs, ...pendingObs]);
-			const obsPct = Math.min(100, Math.round((sinceBound / obsThreshold) * 100));
-			const compPct = Math.min(100, Math.round((sinceCompaction / compThreshold) * 100));
-			const refPct = Math.min(100, Math.round((observationPoolTokens / refThreshold) * 100));
-
-			const refLabel = committedRefsCount === 1 ? "entry" : "entries";
-			const cObsLabel = committedObsCount === 1 ? "observation" : "observations";
-			const pObsLabel = pendingObsCount === 1 ? "observation" : "observations";
+			const observationTokens = tokenSum(folded.activeObservations);
+			const reflectionTokens = tokenSum(folded.reflections);
+			const visibleObservationTokens = tokenSum(visible.observations);
+			const obsProgress = rawTokensSinceObservationCoverage(entries);
+			const reflectionProgress = rawTokensSinceReflectionCoverage(entries);
+			const dropProgress = rawTokensSinceDropCoverage(entries);
+			const compactionProgress = rawTokensSinceLastCompaction(entries);
 
 			const passiveLines = runtime.config.passive === true
 				? [
 					"── Mode ──",
-					"Passive: proactive observation and compaction triggers disabled; compaction hook remains active",
+					"Passive: automatic memory workers and auto-compaction disabled; manual/Pi compaction, commands, and recall remain active",
 					"",
 				]
 				: [];
 
-			const activityLines = runtime.config.passive === true
-				? [
-					"── Activity ──",
-					`Observation trigger: passive (~${sinceBound.toLocaleString()} / ${obsThreshold.toLocaleString()} tokens, ${obsPct}%)`,
-					"  → proactive observation is disabled; manual/Pi compaction can still run sync catch-up observation",
-					`Compaction trigger:  passive (~${sinceCompaction.toLocaleString()} / ${compThreshold.toLocaleString()} tokens, ${compPct}%)`,
-					"  → proactive extension-triggered compaction is disabled; manual/Pi compaction still uses the custom hook",
-					`Next reflection:     ~${observationPoolTokens.toLocaleString()} / ${refThreshold.toLocaleString()} tokens (${refPct}%)`,
-					`  → if observations exceed ${refThreshold.toLocaleString()} tokens when compaction runs, reflections are`,
-					`    distilled from them and redundant observations are pruned away`,
-				]
-				: [
-					"── Activity ──",
-					`Next observation: ~${sinceBound.toLocaleString()} / ${obsThreshold.toLocaleString()} tokens (${obsPct}%)`,
-					`  → at ${obsThreshold.toLocaleString()} tokens, recent conversation is compressed into new observations`,
-					`Next compaction:  ~${sinceCompaction.toLocaleString()} / ${compThreshold.toLocaleString()} tokens (${compPct}%)`,
-					`  → at ${compThreshold.toLocaleString()} tokens, raw history is replaced by the updated reflections and`,
-					`    observations, keeping only the last ${keepRecentTokens.toLocaleString()} tokens of conversation verbatim`,
-					`Next reflection:  ~${observationPoolTokens.toLocaleString()} / ${refThreshold.toLocaleString()} tokens (${refPct}%)`,
-					`  → if observations exceed ${refThreshold.toLocaleString()} tokens when compaction runs, reflections are`,
-					`    distilled from them and redundant observations are pruned away`,
-				];
-
 			const lines = [
 				...passiveLines,
 				"── Memory ──",
-				`Reflections:   ~${committedRefsTokens.toLocaleString()} tokens (${committedRefsCount} ${refLabel})      — durable insights`,
-				`Observations:`,
-				`  committed    ~${committedObsTokens.toLocaleString()} tokens (${committedObsCount} ${cObsLabel}) — folded into last compaction`,
-				`  pending      ~${pendingObsTokens.toLocaleString()} tokens (${pendingObsCount} ${pObsLabel}) — waiting for next compaction`,
-				`  relevance    ${formatRelevanceHistogram(relevanceHistogram)}`,
+				`Observations: ${folded.activeObservations.length} active / ${folded.droppedObservationIds.size} dropped (~${observationTokens.toLocaleString()} active tokens)`,
+				`Reflections:  ${folded.reflections.length} (~${reflectionTokens.toLocaleString()} tokens)`,
+				`Visible:      ${visible.observations.length} observations, ${visible.reflections.length} reflections (~${visibleObservationTokens.toLocaleString()} observation tokens)`,
+				`Drift:        +${drift.observationsOnlyInFull.length} observations, +${drift.reflectionsOnlyInFull.length} reflections, ${drift.droppedOnlyInFull.length} visible observations dropped in full truth`,
 				"",
-				...activityLines,
+				"── Activity ──",
+				`Next observation: ~${obsProgress.toLocaleString()} / ${runtime.config.observeAfterTokens.toLocaleString()} tokens (${pct(obsProgress, runtime.config.observeAfterTokens)}%)`,
+				`Next reflection:  ~${reflectionProgress.toLocaleString()} / ${runtime.config.reflectAfterTokens.toLocaleString()} tokens (${pct(reflectionProgress, runtime.config.reflectAfterTokens)}%)`,
+				`Next drop:        ~${dropProgress.toLocaleString()} / ${runtime.config.reflectAfterTokens.toLocaleString()} tokens (${pct(dropProgress, runtime.config.reflectAfterTokens)}%)`,
+				`Next compaction:  ~${compactionProgress.toLocaleString()} / ${runtime.config.compactAfterTokens.toLocaleString()} tokens (${pct(compactionProgress, runtime.config.compactAfterTokens)}%)`,
+				`Full fold pool:   ~${visibleObservationTokens.toLocaleString()} / ${runtime.config.observationsPoolMaxTokens.toLocaleString()} visible observation tokens (${pct(visibleObservationTokens, runtime.config.observationsPoolMaxTokens)}%)`,
 			];
 
-			if (runtime.observerInFlight || runtime.compactInFlight) {
-				lines.push("");
-				lines.push("── In flight ──");
+			if (runtime.observerInFlight || runtime.reflectDropInFlight || runtime.compactInFlight || runtime.compactHookInFlight) {
+				lines.push("", "── In flight ──");
 				if (runtime.observerInFlight) lines.push("Observer: running");
-				if (runtime.compactInFlight) lines.push("Compaction: running");
+				if (runtime.reflectDropInFlight) lines.push("Reflect/drop: running");
+				if (runtime.compactInFlight) lines.push("Auto-compaction: running");
+				if (runtime.compactHookInFlight) lines.push("Compaction hook: running");
+			}
+
+			if (runtime.lastObserverError || runtime.lastReflectDropError) {
+				lines.push("", "── Last error ──");
+				if (runtime.lastObserverError) lines.push(`Observer: ${runtime.lastObserverError}`);
+				if (runtime.lastReflectDropError) lines.push(`Reflect/drop: ${runtime.lastReflectDropError}`);
 			}
 
 			ctx.ui.notify(lines.join("\n"), "info");

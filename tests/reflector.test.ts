@@ -1,72 +1,13 @@
 import { describe, expect, it } from "vitest";
 
-import {
-	applyReflectionProposals,
-	renderReflectionsForReflectorPrompt,
-	runReflector,
-	type ReflectionProposal,
-} from "../src/compaction.js";
+import { runReflector, normalizeSupportingObservationIds } from "../src/agents/reflector/agent.js";
 import { hashId } from "../src/ids.js";
-import { buildReflectorPassGuidance, REFLECTOR_SYSTEM } from "../src/prompts.js";
-import type { MemoryReflection, ObservationRecord, ReflectionRecord } from "../src/types.js";
-
-const obsA: ObservationRecord = {
-	id: "111111111111",
-	timestamp: "2026-05-03 10:00",
-	relevance: "high",
-	content: "User prefers forks for code exploration.",
-	sourceEntryIds: ["entry-a"],
-};
-
-const obsB: ObservationRecord = {
-	id: "222222222222",
-	timestamp: "2026-05-03 10:01",
-	relevance: "medium",
-	content: "User reiterated that implementation work should use forks.",
-	sourceEntryIds: ["entry-b"],
-};
-
-const obsC: ObservationRecord = {
-	id: "333333333333",
-	timestamp: "2026-05-03 10:02",
-	relevance: "critical",
-	content: "User decided multi-pass reflection should run before pruning tags.",
-	sourceEntryIds: ["entry-c"],
-};
-
-const observations = [obsA, obsB, obsC];
-const allowedObservationIds = observations.map((o) => o.id);
-
-function nativeReflection(content = "User prefers fork-based investigation.", support = [obsA.id]): ReflectionRecord {
-	return {
-		id: hashId(content),
-		content,
-		supportingObservationIds: support,
-	};
-}
-
-function migratedLegacyReflection(content = "User prefers fork-based investigation."): ReflectionRecord {
-	return {
-		id: hashId(content),
-		content,
-		supportingObservationIds: [],
-		legacy: true,
-	};
-}
-
-function apply(
-	reflections: MemoryReflection[],
-	proposals: readonly ReflectionProposal[],
-	minSupportingObservationIds: number,
-) {
-	return applyReflectionProposals(reflections, proposals, allowedObservationIds, { minSupportingObservationIds });
-}
+import { estimateStringTokens } from "../src/tokens.js";
+import { observation, reflection } from "./fixtures/session.js";
 
 function fakeAgentLoop(handler: (prompts: any[], context: any, config: any) => Promise<void> | void): any {
 	return ((prompts: any[], context: any, config: any) => ({
-		async *[Symbol.asyncIterator]() {
-			// No streaming events needed for these tests.
-		},
+		async *[Symbol.asyncIterator]() {},
 		result: async () => {
 			await handler(prompts, context, config);
 			return {};
@@ -74,365 +15,102 @@ function fakeAgentLoop(handler: (prompts: any[], context: any, config: any) => P
 	})) as any;
 }
 
-function promptText(prompts: any[]): string {
-	return prompts[0].content[0].text;
-}
+describe("V3 reflector agent", () => {
+	const obsA = observation("aaaaaaaaaaaa");
+	const obsB = observation("bbbbbbbbbbbb");
+	const baseArgs = {
+		model: {} as any,
+		apiKey: "test",
+		reflections: [],
+		observations: [obsA, obsB],
+	};
 
-describe("reflector pass guidance", () => {
-	it("describes the two specialized reflector passes", () => {
-		expect(buildReflectorPassGuidance(1, 2)).toContain("multi-observation synthesis");
-		expect(buildReflectorPassGuidance(1, 2)).toContain("at least 2 distinct supportingObservationIds");
-		expect(buildReflectorPassGuidance(2, 2)).toContain("final atomic durable facts, safety review, and coverage strengthening");
-		expect(buildReflectorPassGuidance(2, 2)).toContain("single authoritative observation");
-		expect(buildReflectorPassGuidance(2, 2)).toContain("Review high and critical observations");
-		expect(buildReflectorPassGuidance(2, 2)).toContain("additional supportingObservationIds");
-		expect(buildReflectorPassGuidance(2, 2)).toContain("Do not create low-quality reflections just for coverage");
+	it("keeps core reflector prompt guidance in V3 terms", async () => {
+		let systemPrompt = "";
+		const loop = fakeAgentLoop((_prompts, context) => {
+			systemPrompt = context.systemPrompt;
+		});
+
+		await runReflector({ ...baseArgs, agentLoop: loop });
+
+		expect(systemPrompt).toContain("Your task is different from the observer");
+		expect(systemPrompt).toContain("User assertions are authoritative");
+		expect(systemPrompt).toContain("supportingObservationIds");
+		expect(systemPrompt).toContain("coverage/provenance set");
+		expect(systemPrompt).toContain("Do not lightly reword existing reflections");
+		expect(systemPrompt).toContain("Do not turn each observation into a reflection");
+		expect(systemPrompt).toContain("Observations are evidence; reflections are compressed durable conclusions");
+		expect(systemPrompt).toContain("Do not copy or lightly paraphrase observation lines");
+		expect(systemPrompt).toContain("Prefer fewer, higher-value reflections");
+		expect(systemPrompt).toContain("zero reflections than to create one reflection per observation");
+		expect(systemPrompt).toContain("Most transient task-log observations");
+		expect(systemPrompt).toContain("supportingObservationIds are not a checklist");
+		expect(systemPrompt).toContain("ZERO REFLECTIONS");
+		expect(systemPrompt).toContain("Focus on:");
+		expect(systemPrompt).toContain("User identity, role, preferences, constraints");
+		expect(systemPrompt).toContain("Project goals, architecture, technical decisions");
+		expect(systemPrompt).toContain("Recurring user behavior or preferences");
+		expect(systemPrompt).toContain("Durable blockers, invariants, and open decisions");
+		expect(systemPrompt).toContain("Reflection content rules");
+		expect(systemPrompt).toContain("Lead with the fact or pattern");
+		expect(systemPrompt).not.toContain("legacy/no-provenance");
+		expect(systemPrompt).not.toContain("pruner");
+		expect(systemPrompt).not.toContain("[coverage:");
+		expect(systemPrompt).not.toContain("Pass strategy");
 	});
 
-	it("teaches the reflector merge, promotion, and coverage contracts", () => {
-		expect(REFLECTOR_SYSTEM).toContain("exact same reflection content with additional supportingObservationIds");
-		expect(REFLECTOR_SYSTEM).toContain("promote a legacy/no-provenance reflection");
-		expect(REFLECTOR_SYSTEM).toContain("omit any bracketed id handle");
-		expect(REFLECTOR_SYSTEM).toContain("Rewording creates a separate reflection");
-		expect(REFLECTOR_SYSTEM).toContain("durable meaning is captured by the reflection");
-		expect(REFLECTOR_SYSTEM).toContain("coverage/provenance set, not merely the smallest proof example set");
-		expect(REFLECTOR_SYSTEM).toContain("Do not include observations whose unique exact detail");
-		expect(REFLECTOR_SYSTEM).not.toContain("smallest exact set of current observation ids");
-		expect(REFLECTOR_SYSTEM).not.toContain("metadata after \" · \"");
-	});
-});
-
-describe("reflector prompt rendering", () => {
-	it("renders current reflections flat with ids only", () => {
-		const native = nativeReflection();
-		const legacy = migratedLegacyReflection("Legacy no-provenance fact.");
-		const rendered = renderReflectionsForReflectorPrompt([
-			native,
-			legacy,
-			"Plain fallback reflection.",
-		]);
-
-		expect(rendered).toContain(`[${native.id}] ${native.content}`);
-		expect(rendered).toContain(`[${legacy.id}] ${legacy.content}`);
-		expect(rendered).toContain("Plain fallback reflection.");
-		expect(rendered).not.toContain("supports:");
-		expect(rendered).not.toContain("provenance:");
-		expect(rendered).not.toContain("legacy string/no id");
-		expect(rendered).not.toContain(" · ");
-	});
-});
-
-describe("reflection proposal acceptance", () => {
-	it("enforces pass-specific minimum support counts", () => {
-		const oneSupport = [{ content: "User prefers fork-based investigation.", supportingObservationIds: [obsA.id] }];
-		const twoSupports = [{ content: "User repeatedly prefers fork-based investigation.", supportingObservationIds: [obsA.id, obsB.id] }];
-
-		expect(apply([], oneSupport, 2)).toMatchObject({ accepted: 0, unsupported: 1, reflections: [] });
-		expect(apply([], twoSupports, 2)).toMatchObject({ accepted: 1, added: 1 });
-		expect(apply([], oneSupport, 1)).toMatchObject({ accepted: 1, added: 1 });
+	it("normalizes supporting observation ids by active observation order", () => {
+		expect(normalizeSupportingObservationIds(["bbbbbbbbbbbb", "aaaaaaaaaaaa", "aaaaaaaaaaaa"], ["aaaaaaaaaaaa", "bbbbbbbbbbbb"])).toEqual(["aaaaaaaaaaaa", "bbbbbbbbbbbb"]);
+		expect(normalizeSupportingObservationIds(["aaaaaaaaaaaa", "missing"], ["aaaaaaaaaaaa"])).toBeUndefined();
+		expect(normalizeSupportingObservationIds([], ["aaaaaaaaaaaa"])).toBeUndefined();
 	});
 
-	it("rejects invalid or hallucinated support ids", () => {
-		const result = apply([], [{ content: "Invalid support.", supportingObservationIds: [obsA.id, "not-in-pool"] }], 1);
+	it("records one-line V3 reflections with code-computed ids and token counts", async () => {
+		const content = "User prefers source-backed memory.";
+		const loop = fakeAgentLoop(async (_prompts, context) => {
+			await context.tools[0].execute("tool-1", {
+				reflections: [{ content, supportingObservationIds: ["bbbbbbbbbbbb", "aaaaaaaaaaaa"] }],
+			});
+		});
 
-		expect(result).toMatchObject({ accepted: 0, unsupported: 1, reflections: [] });
+		const result = await runReflector({ ...baseArgs, agentLoop: loop });
+
+		expect(result).toEqual([{ id: hashId(content), content, supportingObservationIds: ["aaaaaaaaaaaa", "bbbbbbbbbbbb"], tokenCount: estimateStringTokens(content) }]);
 	});
 
-	it("merges exact-content native reflection supports in observation-pool order", () => {
-		const existing = nativeReflection("User prefers fork-based investigation.", [obsB.id]);
-		const result = apply(
-			[existing],
-			[{ content: existing.content, supportingObservationIds: [obsC.id, obsA.id] }],
-			1,
-		);
-
-		expect(result).toMatchObject({ accepted: 1, merged: 1 });
-		expect(result.reflections).toEqual([
-			{
-				...existing,
-				supportingObservationIds: [obsA.id, obsB.id, obsC.id],
-			},
-		]);
-	});
-
-	it("preserves historical support ids while ordering current support ids by observation pool", () => {
-		const historicalObservationId = "aaaaaaaaaaaa";
-		const existing = nativeReflection("User prefers fork-based investigation.", [historicalObservationId, obsB.id]);
-		const result = apply(
-			[existing],
-			[{ content: existing.content, supportingObservationIds: [obsC.id, obsA.id] }],
-			1,
-		);
-
-		expect(result).toMatchObject({ accepted: 1, merged: 1 });
-		expect(result.reflections).toEqual([
-			{
-				...existing,
-				supportingObservationIds: [historicalObservationId, obsA.id, obsB.id, obsC.id],
-			},
-		]);
-	});
-
-	it("treats exact-content native proposals with no new supports as no-ops", () => {
-		const existing = nativeReflection("User prefers fork-based investigation.", [obsA.id, obsB.id]);
-		const result = apply([existing], [{ content: existing.content, supportingObservationIds: [obsB.id, obsA.id] }], 1);
-
-		expect(result).toMatchObject({ accepted: 0, duplicates: 1 });
-		expect(result.reflections).toEqual([existing]);
-	});
-
-	it("promotes exact-content migrated legacy records to native provenance-backed records", () => {
-		const legacy = migratedLegacyReflection();
-		const result = apply([legacy], [{ content: legacy.content, supportingObservationIds: [obsA.id, obsC.id] }], 1);
-
-		expect(result).toMatchObject({ accepted: 1, promoted: 1 });
-		expect(result.reflections).toEqual([
-			{
-				id: legacy.id,
-				content: legacy.content,
-				supportingObservationIds: [obsA.id, obsC.id],
-			},
-		]);
-	});
-
-	it("promotes exact-content plain legacy strings defensively", () => {
-		const result = apply(["Plain legacy reflection."], [{ content: "Plain legacy reflection.", supportingObservationIds: [obsC.id] }], 1);
-
-		expect(result).toMatchObject({ accepted: 1, promoted: 1 });
-		expect(result.reflections).toEqual([
-			{
-				id: hashId("Plain legacy reflection."),
-				content: "Plain legacy reflection.",
-				supportingObservationIds: [obsC.id],
-			},
-		]);
-	});
-});
-
-describe("runReflector multi-pass orchestration", () => {
-	it("runs passes sequentially and passes accepted reflections forward", async () => {
-		const calls: string[] = [];
-		const loop = fakeAgentLoop(async (prompts, context) => {
-			const text = promptText(prompts);
-			const tool = context.tools[0];
-			const toolSchemaText = JSON.stringify(tool.parameters);
-			calls.push(text);
-
-			expect(toolSchemaText).toContain("durable meaning is captured by this reflection");
-			expect(toolSchemaText).toContain("covered active-memory detail");
-			expect(toolSchemaText).not.toContain("Smallest exact set");
-
-			if (calls.length === 1) {
-				expect(text).toContain("Pass 1 of up to 2");
-				expect(text).toContain("multi-observation synthesis");
-				await tool.execute("pass-1", {
-					reflections: [{ content: "User consistently prefers fork-based investigation.", supportingObservationIds: [obsA.id, obsB.id] }],
-				});
-				return;
-			}
-			expect(calls.length).toBe(2);
-			expect(text).toContain("Pass 2 of up to 2");
-			expect(text).toContain("final atomic durable facts, safety review, and coverage strengthening");
-			expect(text).toContain(`[${hashId("User consistently prefers fork-based investigation.")}] User consistently prefers fork-based investigation.`);
-			expect(text).not.toContain("supports:");
-			await tool.execute("pass-2", {
+	it("rejects invented support ids and multiline content", async () => {
+		const loop = fakeAgentLoop(async (_prompts, context) => {
+			await context.tools[0].execute("tool-1", {
 				reflections: [
-					{ content: "User decided multi-pass reflection should precede pruning tags.", supportingObservationIds: [obsC.id] },
-					{ content: "User consistently prefers fork-based investigation.", supportingObservationIds: [obsC.id, obsA.id] },
+					{ content: "Bad support", supportingObservationIds: ["missing"] },
+					{ content: "Two\nlines", supportingObservationIds: ["aaaaaaaaaaaa"] },
 				],
 			});
 		});
 
-		const result = await runReflector({ model: {} as any, apiKey: "test", agentLoop: loop }, [], observations);
-
-		expect(calls).toHaveLength(2);
-		expect(result.reflections).toEqual([
-			{
-				id: hashId("User consistently prefers fork-based investigation."),
-				content: "User consistently prefers fork-based investigation.",
-				supportingObservationIds: [obsA.id, obsB.id, obsC.id],
-			},
-			{
-				id: hashId("User decided multi-pass reflection should precede pruning tags."),
-				content: "User decided multi-pass reflection should precede pruning tags.",
-				supportingObservationIds: [obsC.id],
-			},
-		]);
-		expect(result.stats).toMatchObject({
-			toolCalls: 2,
-			accepted: 3,
-			added: 2,
-			merged: 1,
-			promoted: 0,
-			duplicates: 0,
-			unsupported: 0,
-		});
-		expect(result.stats.failedPass).toBeUndefined();
-		expect(result.stats.passes).toMatchObject([
-			{ pass: 1, toolCalls: 1, accepted: 1, added: 1, failed: false },
-			{ pass: 2, toolCalls: 1, accepted: 2, added: 1, merged: 1, failed: false },
-		]);
+		await expect(runReflector({ ...baseArgs, agentLoop: loop })).resolves.toBeUndefined();
 	});
 
-	it("salvages accepted reflections from a failed pass and stops before later passes", async () => {
-		let calls = 0;
+	it("dedupes proposals and skips existing reflection ids", async () => {
+		const content = "User prefers terse updates.";
+		const existing = reflection(hashId(content), ["aaaaaaaaaaaa"], { content });
 		const loop = fakeAgentLoop(async (_prompts, context) => {
-			calls++;
-			const tool = context.tools[0];
-			if (calls === 1) {
-				await tool.execute("pass-1", {
-					reflections: [{ content: "User consistently prefers fork-based investigation.", supportingObservationIds: [obsA.id, obsB.id] }],
-				});
-				return;
-			}
-			if (calls === 2) {
-				await tool.execute("pass-2", {
-					reflections: [{ content: "User decided multi-pass reflection should precede pruning tags.", supportingObservationIds: [obsC.id] }],
-				});
-				throw new Error("reflector pass failed");
-			}
-			throw new Error("pass 3 should not run");
-		});
-
-		const result = await runReflector({ model: {} as any, apiKey: "test", agentLoop: loop }, [], observations);
-
-		expect(calls).toBe(2);
-		expect(result.reflections.map((reflection) => typeof reflection === "string" ? reflection : reflection.content)).toEqual([
-			"User consistently prefers fork-based investigation.",
-			"User decided multi-pass reflection should precede pruning tags.",
-		]);
-		expect(result.stats.failedPass).toBe(2);
-		expect(result.stats).toMatchObject({ toolCalls: 2, accepted: 2, added: 2 });
-		expect(result.stats.passes).toMatchObject([
-			{ pass: 1, toolCalls: 1, accepted: 1, added: 1, failed: false },
-			{ pass: 2, toolCalls: 1, accepted: 1, added: 1, failed: true },
-		]);
-	});
-
-	it("calls onEvent callback with agent events during reflector passes", async () => {
-		const events: string[] = [];
-		const loop = fakeAgentLoop(async (_prompts, context) => {
-			const tool = context.tools[0];
-			await tool.execute("pass-1", {
-				reflections: [{ content: "User consistently prefers fork-based investigation.", supportingObservationIds: [obsA.id, obsB.id] }],
+			await context.tools[0].execute("tool-1", {
+				reflections: [
+					{ content, supportingObservationIds: ["aaaaaaaaaaaa"] },
+					{ content: "New durable fact.", supportingObservationIds: ["aaaaaaaaaaaa"] },
+					{ content: "New durable fact.", supportingObservationIds: ["bbbbbbbbbbbb"] },
+				],
 			});
 		});
 
-		const emittingLoop = ((prompts: any[], context: any) => {
-			const inner = loop(prompts, context);
-			return {
-				async *[Symbol.asyncIterator]() {
-					yield { type: "tool_execution_start", toolCallId: "tc1", toolName: "record_reflections", args: {} };
-					yield { type: "tool_execution_end", toolCallId: "tc1", toolName: "record_reflections", result: {}, isError: false };
-				},
-				result: inner.result,
-			};
-		}) as any;
+		const result = await runReflector({ ...baseArgs, reflections: [existing], agentLoop: loop });
 
-		await runReflector(
-			{ model: {} as any, apiKey: "test", agentLoop: emittingLoop, onEvent: (event) => { events.push(event.type); } },
-			[],
-			observations,
-		);
-
-		expect(events).toContain("tool_execution_start");
-		expect(events).toContain("tool_execution_end");
+		expect(result?.map((item) => item.content)).toEqual(["New durable fact."]);
 	});
 
-	it("calls onPassStart for each reflector pass", async () => {
-		const passStarts: string[] = [];
-		const loop = fakeAgentLoop(async (_prompts, context) => {
-			const tool = context.tools[0];
-			await tool.execute("pass-1", {
-				reflections: [{ content: "User consistently prefers fork-based investigation.", supportingObservationIds: [obsA.id, obsB.id] }],
-			});
-		});
-
-		await runReflector(
-			{ model: {} as any, apiKey: "test", agentLoop: loop },
-			[],
-			observations,
-			(pass, max) => { passStarts.push(`${pass}/${max}`); },
-		);
-
-		expect(passStarts).toEqual(["1/2", "2/2"]);
-	});
-
-	it("passes maxTurns as a per-pass reflector turn cap", async () => {
-		const shouldStopByPass: any[] = [];
-		const loop = fakeAgentLoop((_prompts, _context, config) => {
-			shouldStopByPass.push(config.shouldStopAfterTurn);
-		});
-
-		await runReflector(
-			{ model: {} as any, apiKey: "test", agentLoop: loop, maxTurns: 2 },
-			[],
-			observations,
-		);
-
-		expect(shouldStopByPass).toHaveLength(2);
-		for (const shouldStopAfterTurn of shouldStopByPass) {
-			expect(shouldStopAfterTurn({})).toBe(false);
-			expect(shouldStopAfterTurn({})).toBe(true);
-		}
-	});
-
-	it("uses configured reflector thinking level for reasoning models", async () => {
-		const seenReasoning: unknown[] = [];
-		const loop = fakeAgentLoop((_prompts, _context, config) => {
-			seenReasoning.push(config.reasoning);
-		});
-
-		await runReflector(
-			{ model: { reasoning: true } as any, apiKey: "test", agentLoop: loop, thinkingLevel: "minimal" },
-			[],
-			observations,
-		);
-
-		expect(seenReasoning).toEqual(["minimal", "minimal"]);
-	});
-
-	it("omits reflector reasoning when thinkingLevel is off", async () => {
-		const seenReasoning: unknown[] = [];
-		const loop = fakeAgentLoop((_prompts, _context, config) => {
-			seenReasoning.push(config.reasoning);
-		});
-
-		await runReflector(
-			{ model: { reasoning: true } as any, apiKey: "test", agentLoop: loop, thinkingLevel: "off" },
-			[],
-			observations,
-		);
-
-		expect(seenReasoning).toEqual([undefined, undefined]);
-	});
-
-	it("stops reflector pass early on consecutive empty calls", async () => {
-		const loop = fakeAgentLoop(async (_prompts, context) => {
-			const tool = context.tools[0];
-			// First call: produces nothing (unsupported — no supporting ids)
-			await tool.execute("tc-1", {
-				reflections: [{ content: "Reflection A.", supportingObservationIds: ["nonexistent"] }],
-			});
-			// Second empty call
-			await tool.execute("tc-2", {
-				reflections: [{ content: "Reflection B.", supportingObservationIds: ["nonexistent"] }],
-			});
-			// Third empty call
-			await tool.execute("tc-3", {
-				reflections: [{ content: "Reflection C.", supportingObservationIds: ["nonexistent"] }],
-			});
-		});
-
-		const result = await runReflector(
-			{ model: {} as any, apiKey: "test", agentLoop: loop, maxTurns: 20 },
-			[],
-			observations,
-		);
-
-		// All 3 calls produce 0 accepted (invalid ids), but fake loop doesn't stop.
-		// The real agentLoop would stop after 2 consecutive empty calls.
-		// Just verify the function completes without error.
-		expect(result.reflections.length).toBe(0);
+	it("returns undefined when no tool call records reflections", async () => {
+		const loop = fakeAgentLoop(() => {});
+		await expect(runReflector({ ...baseArgs, agentLoop: loop })).resolves.toBeUndefined();
 	});
 });

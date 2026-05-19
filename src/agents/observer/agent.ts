@@ -1,12 +1,13 @@
-import { agentLoop, type AgentContext, type AgentLoopConfig, type AgentTool } from "@mariozechner/pi-agent-core";
-import type { Message, Model, ModelThinkingLevel } from "@mariozechner/pi-ai";
-import { Type } from "@mariozechner/pi-ai";
+import { agentLoop, type AgentContext, type AgentLoopConfig, type AgentTool } from "@earendil-works/pi-agent-core";
+import type { Message, Model, ModelThinkingLevel } from "@earendil-works/pi-ai";
+import { Type } from "@earendil-works/pi-ai";
 import type { Static } from "typebox";
-import { hashId } from "./ids.js";
-import { AGENT_LOOP_MAX_TOKENS, boundedMaxTokens } from "./model-budget.js";
+import { hashId } from "../../ids.js";
+import { AGENT_LOOP_MAX_TOKENS, boundedMaxTokens } from "../../model-budget.js";
 import { OBSERVER_SYSTEM } from "./prompts.js";
-import { nowTimestamp, truncateRecordContent } from "./serialize.js";
-import type { ObservationRecord, Relevance } from "./types.js";
+import { nowTimestamp, truncateRecordContent } from "../../serialize.js";
+import type { Observation, Relevance } from "../../session-ledger/index.js";
+import { estimateStringTokens } from "../../tokens.js";
 
 interface RunObserverArgs {
 	model: Model<any>;
@@ -80,12 +81,12 @@ export function normalizeSourceEntryIds(
 	return Array.from(seen).sort((a, b) => (allowedOrder.get(a) ?? 0) - (allowedOrder.get(b) ?? 0));
 }
 
-export async function runObserver(args: RunObserverArgs): Promise<ObservationRecord[] | undefined> {
+export async function runObserver(args: RunObserverArgs): Promise<Observation[] | undefined> {
 	const { model, apiKey, headers, priorReflections, priorObservations, chunk, allowedSourceEntryIds, signal } = args;
 	const conversation = chunk.trim();
 	if (!conversation) return undefined;
 
-	const accumulated = new Map<string, ObservationRecord>();
+	const accumulated = new Map<string, Observation>();
 
 	const recordObservations: AgentTool<typeof RecordObservationsSchema> = {
 		name: "record_observations",
@@ -117,6 +118,7 @@ export async function runObserver(args: RunObserverArgs): Promise<ObservationRec
 					timestamp: obs.timestamp,
 					relevance: obs.relevance as Relevance,
 					sourceEntryIds,
+					tokenCount: estimateStringTokens(content),
 				});
 				added++;
 			}
@@ -192,8 +194,4 @@ ${conversation}`;
 
 	if (accumulated.size === 0) return undefined;
 	return Array.from(accumulated.values());
-}
-
-export function observationsToPromptLines(records: ObservationRecord[]): string[] {
-	return records.map((r) => `[${r.id}] ${r.timestamp} [${r.relevance}] ${r.content}`);
 }

@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
-import { normalizeSourceEntryIds, OBSERVATION_TIMESTAMP_PATTERN, runObserver } from "../src/observer.js";
+import { normalizeSourceEntryIds, OBSERVATION_TIMESTAMP_PATTERN, runObserver } from "../src/agents/observer/agent.js";
+import { estimateStringTokens } from "../src/tokens.js";
 
 function fakeAgentLoop(handler: (prompts: any[], context: any, config: any) => Promise<void> | void): any {
 	return ((prompts: any[], context: any, config: any) => ({
@@ -17,7 +18,6 @@ function fakeAgentLoop(handler: (prompts: any[], context: any, config: any) => P
 describe("OBSERVATION_TIMESTAMP_PATTERN", () => {
 	it("matches local minute timestamps without regex shorthand escapes", () => {
 		expect(OBSERVATION_TIMESTAMP_PATTERN).not.toContain("\\d");
-
 		const pattern = new RegExp(OBSERVATION_TIMESTAMP_PATTERN);
 		expect(pattern.test("2026-05-02 10:30")).toBe(true);
 		expect(pattern.test("2026-5-02 10:30")).toBe(false);
@@ -27,24 +27,82 @@ describe("OBSERVATION_TIMESTAMP_PATTERN", () => {
 });
 
 describe("runObserver", () => {
-	it("uses a larger model-bounded output budget", async () => {
-		const seenMaxTokens: number[] = [];
-		const loop = fakeAgentLoop((_prompts, _context, config) => {
-			seenMaxTokens.push(config.maxTokens);
+	const baseArgs = {
+		model: {} as any,
+		apiKey: "test",
+		priorReflections: [],
+		priorObservations: [],
+		chunk: "[Source entry id: entry-a]\nUser asked for a memory update.",
+		allowedSourceEntryIds: ["entry-a"],
+	};
+
+	it("keeps core observer prompt rules", async () => {
+		let systemPrompt = "";
+		const loop = fakeAgentLoop((_prompts, context) => {
+			systemPrompt = context.systemPrompt;
 		});
-		const baseArgs = {
-			apiKey: "test",
-			priorReflections: [],
-			priorObservations: [],
-			chunk: "[Source entry id: entry-a]\nUser asked for a memory update.",
-			allowedSourceEntryIds: ["entry-a"],
-			agentLoop: loop,
-		};
 
-		await runObserver({ ...baseArgs, model: { maxTokens: 384_000 } as any });
-		await runObserver({ ...baseArgs, model: { maxTokens: 8_192 } as any });
+		await runObserver({ ...baseArgs, agentLoop: loop });
 
-		expect(seenMaxTokens).toEqual([32_000, 8_192]);
+		expect(systemPrompt).toContain("Preserve user assertions exactly");
+		expect(systemPrompt).toContain("Detail preservation");
+		expect(systemPrompt).toContain("Frame state changes as supersession");
+		expect(systemPrompt).toContain("sourceEntryIds");
+		expect(systemPrompt).toContain("zero observations");
+		expect(systemPrompt).toContain("The dropper will drop these first");
+		expect(systemPrompt).not.toContain("pruner");
+	});
+
+	it("records V3 observations with source ids and code-computed tokenCount", async () => {
+		const content = "User asked for a memory update.";
+		const loop = fakeAgentLoop(async (_prompts, context) => {
+			await context.tools[0].execute("tool-1", {
+				observations: [{ timestamp: "2026-05-02 10:30", content, relevance: "high", sourceEntryIds: ["entry-a"] }],
+			});
+		});
+
+		const observations = await runObserver({ ...baseArgs, agentLoop: loop });
+
+		expect(observations).toHaveLength(1);
+		expect(observations?.[0]).toMatchObject({
+			content,
+			timestamp: "2026-05-02 10:30",
+			relevance: "high",
+			sourceEntryIds: ["entry-a"],
+			tokenCount: estimateStringTokens(content),
+		});
+		expect(observations?.[0].id).toMatch(/^[a-f0-9]{12}$/);
+	});
+
+	it("rejects invented source ids and returns no observations", async () => {
+		const loop = fakeAgentLoop(async (_prompts, context) => {
+			await context.tools[0].execute("tool-1", {
+				observations: [{ timestamp: "2026-05-02 10:30", content: "Bad source", relevance: "medium", sourceEntryIds: ["missing"] }],
+			});
+		});
+
+		await expect(runObserver({ ...baseArgs, agentLoop: loop })).resolves.toBeUndefined();
+	});
+
+	it("dedupes deterministic ids", async () => {
+		const loop = fakeAgentLoop(async (_prompts, context) => {
+			await context.tools[0].execute("tool-1", {
+				observations: [
+					{ timestamp: "2026-05-02 10:30", content: "Same content", relevance: "medium", sourceEntryIds: ["entry-a"] },
+					{ timestamp: "2026-05-02 10:31", content: "Same content", relevance: "high", sourceEntryIds: ["entry-a"] },
+				],
+			});
+		});
+
+		const observations = await runObserver({ ...baseArgs, agentLoop: loop });
+
+		expect(observations).toHaveLength(1);
+		expect(observations?.[0].content).toBe("Same content");
+	});
+
+	it("returns undefined when no tool call records observations", async () => {
+		const loop = fakeAgentLoop(() => {});
+		await expect(runObserver({ ...baseArgs, agentLoop: loop })).resolves.toBeUndefined();
 	});
 
 	it("uses maxTurns as an observer turn cap", async () => {
@@ -53,16 +111,7 @@ describe("runObserver", () => {
 			shouldStopAfterTurn = config.shouldStopAfterTurn;
 		});
 
-		await runObserver({
-			model: {} as any,
-			apiKey: "test",
-			priorReflections: [],
-			priorObservations: [],
-			chunk: "[Source entry id: entry-a]\nUser asked for a memory update.",
-			allowedSourceEntryIds: ["entry-a"],
-			agentLoop: loop,
-			maxTurns: 2,
-		});
+		await runObserver({ ...baseArgs, agentLoop: loop, maxTurns: 2 });
 
 		expect(shouldStopAfterTurn).toBeTypeOf("function");
 		expect(shouldStopAfterTurn({})).toBe(false);
@@ -75,16 +124,7 @@ describe("runObserver", () => {
 			seenReasoning = config.reasoning;
 		});
 
-		await runObserver({
-			model: { reasoning: true } as any,
-			apiKey: "test",
-			priorReflections: [],
-			priorObservations: [],
-			chunk: "[Source entry id: entry-a]\nUser asked for a memory update.",
-			allowedSourceEntryIds: ["entry-a"],
-			agentLoop: loop,
-			thinkingLevel: "minimal",
-		});
+		await runObserver({ ...baseArgs, model: { reasoning: true } as any, agentLoop: loop, thinkingLevel: "minimal" });
 
 		expect(seenReasoning).toBe("minimal");
 	});
@@ -95,16 +135,7 @@ describe("runObserver", () => {
 			seenReasoning = config.reasoning;
 		});
 
-		await runObserver({
-			model: { reasoning: true } as any,
-			apiKey: "test",
-			priorReflections: [],
-			priorObservations: [],
-			chunk: "[Source entry id: entry-a]\nUser asked for a memory update.",
-			allowedSourceEntryIds: ["entry-a"],
-			agentLoop: loop,
-			thinkingLevel: "off",
-		});
+		await runObserver({ ...baseArgs, model: { reasoning: true } as any, agentLoop: loop, thinkingLevel: "off" });
 
 		expect(seenReasoning).toBeUndefined();
 	});
@@ -121,16 +152,10 @@ describe("normalizeSourceEntryIds", () => {
 		expect(normalizeSourceEntryIds(["entry-b", "entry-b", "entry-a"], allowed)).toEqual(["entry-a", "entry-b"]);
 	});
 
-	it("rejects missing or empty source ids", () => {
+	it("rejects missing, empty, or hallucinated source ids", () => {
 		expect(normalizeSourceEntryIds(undefined, allowed)).toBeUndefined();
 		expect(normalizeSourceEntryIds([], allowed)).toBeUndefined();
-	});
-
-	it("rejects hallucinated source ids instead of partially accepting them", () => {
 		expect(normalizeSourceEntryIds(["entry-a", "not-in-the-chunk"], allowed)).toBeUndefined();
-	});
-
-	it("rejects ids when the allowed chunk has no source entries", () => {
 		expect(normalizeSourceEntryIds(["entry-a"], [])).toBeUndefined();
 	});
 });

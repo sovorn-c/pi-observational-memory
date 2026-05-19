@@ -1,7 +1,7 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import { existsSync, mkdirSync, renameSync, statSync, unlinkSync, appendFileSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { getAgentDir } from "@mariozechner/pi-coding-agent";
+import { getAgentDir } from "@earendil-works/pi-coding-agent";
 
 export const DEBUG_LOG_MAX_BYTES = 10 * 1024 * 1024;
 export const DEBUG_LOG_RELATIVE_PATH = join("observational-memory", "debug.ndjson");
@@ -17,10 +17,6 @@ const storage = new AsyncLocalStorage<DebugLogContext>();
 export function withDebugLogContext<T>(context: DebugLogContext, fn: () => T): T {
 	const parent = storage.getStore();
 	return storage.run({ ...parent, ...context }, fn);
-}
-
-export function isDebugLogEnabled(): boolean {
-	return storage.getStore()?.enabled === true;
 }
 
 export function debugLog(event: string, data: Record<string, unknown> = {}): void {

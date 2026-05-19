@@ -1,123 +1,211 @@
 # Concepts
 
-This doc explains the vocabulary observational memory uses. Read it once and the rest of the documentation will read clearly.
+This page defines the V3 vocabulary used by `pi-observational-memory`.
 
 ## The big picture
 
-Pi is an agent framework. Long sessions with any AI agent eventually run up against the model's context window: older messages have to be **compacted** — replaced with a summary, while recent ones stay verbatim. The shape of that summary determines what the agent remembers later in the session, and how well that memory holds up across many compactions in a row.
+Long Pi sessions eventually outgrow the model context window. Pi solves that by compacting older messages into a summary while keeping recent messages verbatim. This extension makes that summary more durable by maintaining a branch-local memory ledger while the session happens.
 
-Observational memory builds the summary from a structured, tiered memory system that's maintained as the session happens, not all at once at compaction time. The summary becomes a mechanical concatenation of two structured pools — reflections and observations — instead of a single fresh LLM rewrite each cycle.
+In V3, the ledger is the source of truth. Compaction entries contain what the agent sees, but memory state is reconstructed by folding V3 ledger entries on the current branch.
 
-This page defines the vocabulary the rest of the docs use.
-
-## The two memory layers
+## Memory layers
 
 ### Observations
 
-An **observation** is a single timestamped event from the conversation. One short sentence of plain prose, plus source-aware metadata:
+An observation is a timestamped event from the conversation.
 
-- An `id` — a 12-character handle the agent can use with `recall`
-- A `timestamp` (`YYYY-MM-DD HH:MM`, local time, to the minute)
-- A `content` string (single line, plain prose, no markdown, no emojis, no embedded tags)
-- A `relevance` tier — one of `low`, `medium`, `high`, `critical`
-- Source entry ids, stored silently on modern observations, that point back to the raw conversation/tool entries the observation came from
+Shape:
 
-Rendered, it looks like this:
-
+```ts
+type Observation = {
+  id: string;                 // deterministic 12-character lowercase hex id
+  content: string;            // single-line plain prose
+  timestamp: string;          // YYYY-MM-DD HH:MM
+  relevance: "low" | "medium" | "high" | "critical";
+  sourceEntryIds: string[];   // raw/source entries that support this observation
+  tokenCount: number;         // estimated content tokens
+}
 ```
+
+Rendered in summaries/views:
+
+```md
 [d4e5f6a1b2c3] 2026-01-15 14:30 [high] User decided to switch from REST to GraphQL for the public API; motivation was reducing over-fetching on mobile clients.
 ```
 
-Observations are written **continuously** by a background process called the **observer** as you work. They accumulate in the session tree. Over a long session, you'll have hundreds of them. Legacy observations created before source attribution may not have source ids; `recall` reports that honestly instead of inventing evidence.
+Observations are written by the observer into `om.observations.recorded` ledger entries. They are factual event records, not durable conclusions.
 
 ### Reflections
 
-A **reflection** is a stable, long-lived fact distilled from observations. It has no timestamp or relevance tier because it names a durable pattern, not a specific event. Modern reflections render with an id handle when recallable:
+A reflection is a durable conclusion distilled from observations: user preferences, project constraints, architectural decisions, recurring behavior, or long-lived facts.
 
+Shape:
+
+```ts
+type Reflection = {
+  id: string;                         // deterministic 12-character lowercase hex id
+  content: string;                    // single-line plain prose
+  supportingObservationIds: string[]; // evidence observations
+  tokenCount: number;                 // estimated content tokens
+}
 ```
-[a1b2c3d4e5f6] User works at Acme Corp building Acme Dashboard on Next.js 15.
+
+Rendered:
+
+```md
+[a1b2c3d4e5f6] User works at Acme Corp building Acme Dashboard on Next.js 15 with Supabase auth.
 ```
 
-That id lets the agent recover the observations and raw sources that support the reflection. Older legacy reflections may still appear as plain prose; migrated legacy reflections can have ids but no source provenance, so `recall` will report that no evidence is available rather than inventing it.
+Reflections are written by the reflector into `om.reflections.recorded` ledger entries. They should be fewer and more durable than observations; the reflector should not turn every observation into a reflection.
 
-### Why two layers?
+### Drops
 
-Different facts have different lifespans. "User confirmed tests pass on auth.ts" is a one-time event — it matters now, will probably be irrelevant in two hours, and definitely won't matter tomorrow. "User uses Postgres" is a fact about the project that will still be true next week.
+A drop is a tombstone for observation ids that should no longer be active memory. Drops are written by the dropper into `om.observations.dropped` ledger entries.
 
-Observations capture *everything* with timestamps so the agent can reason about *when* things happened. Reflections crystallize the patterns that emerge from those observations and are never paraphrased again.
+Dropping does not delete history. Dropped observations remain recallable from ledger history, but they are not active observations in projections.
 
-## The three tiers (the actors that run)
+## Actors
 
-The memory layers above are the *data*. Three separate processes are the *actors* that read and write that data.
+### Observer
 
-### 1. Observer (continuous, asynchronous)
+The observer runs asynchronously from `turn_end` when raw/source tokens after the latest observation coverage marker reach `observeAfterTokens`.
 
-The observer runs in the background as turns complete. Every ~1k tokens of new conversation, it:
+It receives raw/source entries only, validates source ids, and appends a non-empty `om.observations.recorded` entry. If there is nothing worth recording, it writes no entry and the raw range remains eligible for a later observer run.
 
-1. Reads the recent conversation chunk
-2. Reads the existing reflections + observations so it knows what's already captured
-3. Distills the new chunk into a batch of new observations
-4. Writes them as a silent entry in the session tree
+### Reflector
 
-The observer is **fire-and-forget**. The user never waits on it. If a new observer needs to fire while one is already running, the trigger is skipped — tokens accumulate and the next turn picks them up.
+The reflector runs in the reflect/drop lane from `turn_end` when its raw-token clock reaches `reflectAfterTokens` and the observer is not due.
 
-### 2. Compaction (synchronous, owned by the extension)
+It reads active observations and current reflections, then appends durable new reflections as `om.reflections.recorded`. Reflections must cite valid supporting observation ids.
 
-When the live tail grows large enough (default: ~50k raw tokens from the latest compaction's `firstKeptEntryId`, or the whole branch before the first compaction), the extension calls Pi's `compact()`. This replaces the older messages in context with a single **compaction summary**.
+### Dropper
 
-Crucially: the summary itself is **not** written by an LLM. It's a deterministic concatenation of all current reflections followed by all current observations. This is what eliminates the "summary of a summary of a summary" degradation — kept observations and reflections are carried forward without paraphrase, though observations can still be pruned later.
+The dropper runs after the reflector in the same reflect/drop lane when its raw-token clock reaches `reflectAfterTokens`. If both are due, the reflector runs first and the dropper can see same-turn new reflections.
 
-### 3. Reflector + Pruner (synchronous, runs only at compaction, only above a gate)
+The dropper can only drop active observation ids. It cannot rewrite or merge observations. Code also protects `critical` observations from being dropped.
 
-If the observation pool is large enough (default: ≥30k tokens), two LLM agents run inside compaction as an inseparable pair:
+### Compaction hook
 
-- The **reflector** runs two focused passes over the full pool: broad multi-observation synthesis first, then final atomic facts, safety review, and coverage strengthening. It can merge new support into exact-content matches and promote legacy reflections when the same durable fact becomes source-backed.
-- The **pruner** drops observations from the pool by id. It runs up to 2 passes: clear-cut source-backed drops first, then final topic compression, age compression, and budget-pressure rescue until the pool fits under ~80% of the budget or no sound drops remain. It cannot rewrite or merge observations — only drop them. It also sees advisory coverage tags (`uncited`, `cited`, `reinforced`) that indicate whether current reflections cite an observation.
+The compaction hook runs during `session_before_compact`. In V3 it is deterministic and model-free:
 
-They always run together. Pruning without reflecting first would lose information that hadn't yet been crystallized. Reflecting without pruning would let the observation pool grow forever.
+- it does not run observer, reflector, or dropper;
+- it does not call a model;
+- it does not wait for background memory workers;
+- it folds/projects ledger state and renders the summary.
 
-Below the gate, both are skipped. Compaction in that case skips reflector/pruner LLM calls; it only calls a model if sync catch-up observation is needed for uncovered raw history.
+This is the main reason V3 compactions should feel instantaneous compared with V2.
 
-## How the actor sees memory
+## Ledger entries
 
-The **actor** is your main coding agent — the one you're talking to. The actor only ever sees the most recent compaction summary, packaged as a normal `compactionSummary` message at the start of context.
+V3 uses three custom memory ledger entry types:
 
-Observations and reflections are **never injected into the live message stream**. They're stored quietly in the session tree until the next compaction folds them into a new summary.
+```ts
+om.observations.recorded: {
+  observations: Observation[];
+  coversUpToId: string;
+}
 
-This is a deliberate cache-friendliness choice. If we sprinkled fresh observations into every turn, every new observation would change the prompt prefix and invalidate prefix caching. By keeping memory updates batched at compaction boundaries, the prefix stays stable between compactions and prefix caching keeps working.
+om.reflections.recorded: {
+  reflections: Reflection[];
+  coversUpToId: string;
+}
 
-## Committed vs pending observations
+om.observations.dropped: {
+  observationIds: string[];
+  coversUpToId: string;
+}
+```
 
-The `/om-status` and `/om-view` commands distinguish two states for observations:
+The compaction hook writes V3 folded details on Pi compaction entries:
 
-- **Committed observations** are folded into the most recent compaction's `details.observations`. They've already been counted by the reflector + pruner (if those ran) and will appear in the current compaction summary the actor sees.
-- **Pending observations** are `om.observation` entries written since the last compaction. They live in the session tree but haven't been folded into a summary yet — they'll be merged into the working pool at the next compaction.
+```ts
+type MemoryDetails = {
+  type: "om.folded";
+  version: 1;
+  fullFold: boolean;
+  observations: Observation[];
+  reflections: Reflection[];
+}
+```
 
-This split exists because the observer keeps writing between compactions. Pending observations are real, just not yet visible to the actor.
+Old V2 memory entry/details formats are ignored.
 
-## Glossary, in one place
+## `coversUpToId`
+
+`coversUpToId` is a progress watermark. It tells V3 where a worker's raw/source-token progress has reached.
+
+It is not:
+
+- source provenance;
+- a dependency pointer;
+- proof that a later memory ledger entry caused another one.
+
+Source provenance lives on `Observation.sourceEntryIds` and `Reflection.supportingObservationIds`.
+
+Progress counting uses raw/source tokens after the marker. Raw/source entries are `message`, `custom_message`, and `branch_summary` entries; memory ledger entries and compaction entries do not add raw-token progress.
+
+## Visible, full, and diff
+
+V3 distinguishes three projections:
+
+- **Visible memory** — what the latest `om.folded` compaction details made visible to the agent. This is what `/om-view` shows by default.
+- **Full memory** — full V3 ledger truth folded at the branch tip. This is what `/om-view full` shows.
+- **Diff** — visible-vs-full drift. This is what `/om-view diff` shows.
+
+Visible and full memory can differ intentionally. Background ledger work may happen after the latest compaction, and normal compactions may avoid re-folding reflection/drop effects until full-fold pressure requires it.
+
+## Recall
+
+`recall` is an agent-facing tool, not a search command. It takes a specific 12-character memory id and looks it up in V3 ledger history on the current branch.
+
+Recall can return:
+
+- an observation, marked `active` or `dropped`;
+- a reflection plus supporting observations;
+- a mixed result if an id collision exists;
+- missing/non-source diagnostics when source evidence is unavailable.
+
+Use recall when compacted memory matters and exact source evidence is needed before acting.
+
+## Relevance tiers
+
+Observation relevance is assigned by the observer:
+
+| Tier | Meaning |
+|---|---|
+| `critical` | User identity, explicit corrections, hard constraints, completed outcomes, or facts that should not be dropped. |
+| `high` | Important decisions, non-trivial technical direction, unresolved blockers, key preferences. |
+| `medium` | Useful task-level context and ordinary progress. |
+| `low` | Routine status, tool acknowledgements, or details likely re-derivable from nearby context. |
+
+The dropper uses relevance as part of its judgment, but it is not the only signal. User assertions, exact decisions, unique identifiers, dated events, errors, and rationale should be preserved unless safely represented by durable reflections.
+
+## V2 compatibility model
+
+V3 intentionally does not migrate V2 memory. Old V2 settings are ignored, old V2 custom entries/details are ignored, and rollback to V2 after creating V3 ledger entries should be treated as memory reset or visibility loss.
+
+When upgrading from V2, update settings and start a new clean session.
+
+## Glossary
 
 | Term | Meaning |
 |---|---|
-| **Observation** | One timestamped, relevance-tagged event with an id. Modern observations include source attribution; legacy ones may not. Plain prose content. Written by the observer. |
-| **Reflection** | One durable pattern. Modern/migrated reflections may render with an id recall handle; native source-backed records cite supporting observations. |
-| **Observer** | Async LLM agent that runs every ~1k raw tokens in the background, writing observations. |
-| **Reflector** | LLM agent that runs at compaction (above the gate) to crystallize durable reflections and attach supporting observation ids. |
-| **Pruner** | LLM agent that runs after the reflector to drop observations by id. Cannot rewrite, only drop; receives advisory coverage tags. |
-| **Compaction** | The act of replacing older messages in context with a summary so the recent tail still fits. Owned by the extension. |
-| **Compaction summary** | The text the actor sees in place of the older messages. A mechanical concatenation of reflections + observations. |
-| **Actor** | Your main coding agent — the one the user is talking to. |
-| **Raw tokens** | Tokens from message and custom_message entries — i.e. everything that projects to LLM messages. |
-| **Last bound** | The latest raw entry already covered by an observation. The cutoff the observer trigger walks back to. |
-| **Working observation pool** | At compaction time: prior committed observations + delta observations since last compaction + any sync-catch-up gap observation. The pool the reflector and pruner operate on. |
-| **Committed observations** | Observations folded into the most recent compaction's `details`. Visible to the actor through the summary. |
-| **Pending observations** | Observations written since the last compaction. In the tree, not yet in a summary. |
-| **Sync catch-up observer** | A synchronous observer pass run inside compaction to cover any raw entries the async observer hasn't summarized yet. |
-| **Gate** | The threshold (`reflectionThresholdTokens`, default 30k) above which the reflector + pruner engage. |
-| **Branch** | One path through the session tree (root → leaf). Each branch has its own memory state through `compaction.details`. |
-| **Recall** | Agent-facing tool that takes a specific observation/reflection id and returns exact source evidence from the current branch. Not search. |
+| Branch | One path through Pi's session tree. V3 memory is branch-local. |
+| Ledger | Silent V3 custom memory entries folded from branch root to a point. |
+| Observation | Timestamped source-backed event record. |
+| Reflection | Durable conclusion backed by observations. |
+| Drop | Tombstone that removes an observation id from active memory. |
+| Visible memory | Latest folded memory visible to the agent through compaction details. |
+| Full memory | Full V3 ledger truth folded at branch tip or another boundary. |
+| Full fold | Compaction mode that folds observations, reflections, and drops through the boundary. |
+| Progress watermark | `coversUpToId`; marker used for raw-token progress clocks. |
+| Observer | Background agent that records observations. |
+| Reflector | Background agent that records durable reflections. |
+| Dropper | Background agent that drops active observations by id. |
+| Recall | Agent tool for exact evidence behind a memory id. |
 
 ## Where to go next
 
-- **[how-it-works.md](how-it-works.md)** — the full lifecycle, data shapes, async-race handling, and the invariants the system maintains.
-- **[configuration.md](configuration.md)** — every setting, what it trades off, and tuning recipes for common goals (lower cost, longer sessions, etc.).
+- [how-it-works.md](how-it-works.md) — runtime lifecycle and data flow.
+- [configuration.md](configuration.md) — V3 settings and migration table.
+- [../README.md](../README.md) — quick start and V2 upgrade notice.

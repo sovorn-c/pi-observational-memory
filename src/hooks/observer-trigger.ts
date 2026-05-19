@@ -1,18 +1,23 @@
-import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { debugLog, withDebugLogContext } from "../debug-log.js";
-import { resolveTurnLimits } from "../config.js";
-import {
-	firstRawIdAfter,
-	getMemoryState,
-	lastObservationCoverEndIdx,
-	rawTailEntriesBetween,
-	rawTokensSinceLastBound,
-} from "../branch.js";
-import { observationsToPromptLines, runObserver } from "../observer.js";
+import { runObserver } from "../agents/observer/agent.js";
 import type { Runtime } from "../runtime.js";
 import { serializeSourceAddressedBranchEntries } from "../serialize.js";
-import { estimateStringTokens } from "../tokens.js";
-import { OBSERVATION_CUSTOM_TYPE, reflectionToPromptLine, type ObservationEntryData } from "../types.js";
+import {
+	OM_OBSERVATIONS_RECORDED,
+	buildObservationsRecordedData,
+	fullProjection,
+	isSourceEntry,
+	latestCoverageIndex,
+	observationToSummaryLine,
+	rawTokensSinceObservationCoverage,
+	reflectionToSummaryLine,
+	type Entry,
+} from "../session-ledger/index.js";
+
+function sourceEntriesAfter(entries: Entry[], index: number): Entry[] {
+	return entries.slice(index + 1).filter(isSourceEntry);
+}
 
 export function registerObserverTrigger(pi: ExtensionAPI, runtime: Runtime): void {
 	pi.on("turn_end", (_event, ctx) => {
@@ -20,26 +25,21 @@ export function registerObserverTrigger(pi: ExtensionAPI, runtime: Runtime): voi
 		if (runtime.config.passive === true) return;
 		if (runtime.observerInFlight) return;
 
-		const entries = ctx.sessionManager.getBranch() as Parameters<typeof rawTokensSinceLastBound>[0];
-		const tokens = rawTokensSinceLastBound(entries);
-		if (tokens < runtime.config.observationThresholdTokens) return;
+		const entries = ctx.sessionManager.getBranch() as Entry[];
+		const tokens = rawTokensSinceObservationCoverage(entries);
+		if (tokens < runtime.config.observeAfterTokens) return;
 
-		const lastBoundIdx = lastObservationCoverEndIdx(entries);
-		const coversFromId = firstRawIdAfter(entries, lastBoundIdx);
-		if (!coversFromId) return;
+		const lastCoverageIdx = latestCoverageIndex(entries, OM_OBSERVATIONS_RECORDED);
+		const chunkEntries = sourceEntriesAfter(entries, lastCoverageIdx);
+		const coversUpToId = chunkEntries.at(-1)?.id;
+		if (!coversUpToId) return;
 
-		const leafId = ctx.sessionManager.getLeafId();
-		if (!leafId) return;
-		const coversUpToId = leafId;
-
-		const { reflections, committedObs, pendingObs } = getMemoryState(entries);
-		const priorObservationLines = observationsToPromptLines([...committedObs, ...pendingObs]);
-		const turnLimits = resolveTurnLimits(runtime.config);
-
-		const chunkEntries = rawTailEntriesBetween(entries, coversFromId, coversUpToId);
-		if (chunkEntries.length === 0) return;
 		const { text: chunk, sourceEntryIds } = serializeSourceAddressedBranchEntries(chunkEntries);
 		if (!chunk.trim() || sourceEntryIds.length === 0) return;
+
+		const memory = fullProjection(entries);
+		const priorReflections = memory.reflections.map(reflectionToSummaryLine);
+		const priorObservations = memory.observations.map(observationToSummaryLine);
 
 		if (ctx.hasUI) ctx.ui.notify(
 			`Observational memory: observer running on ~${tokens.toLocaleString()}-token chunk`,
@@ -47,8 +47,6 @@ export function registerObserverTrigger(pi: ExtensionAPI, runtime: Runtime): voi
 		);
 		const runId = `observer-${Date.now().toString(36)}-${Math.random().toString(16).slice(2, 8)}`;
 
-		// Capture ctx properties synchronously — the async work below may outlive
-		// the extension ctx (stale after session replacement/reload).
 		const hasUI = ctx.hasUI;
 		const ui = ctx.ui;
 		const model = ctx.model;
@@ -59,12 +57,11 @@ export function registerObserverTrigger(pi: ExtensionAPI, runtime: Runtime): voi
 			try {
 				debugLog("observer.start", {
 					tokens,
-					coversFromId,
 					coversUpToId,
 					sourceEntryIds,
 					sourceEntryCount: sourceEntryIds.length,
-					priorReflections: reflections.length,
-					priorObservations: priorObservationLines.length,
+					priorReflections: priorReflections.length,
+					priorObservations: priorObservations.length,
 				});
 				const resolved = await runtime.resolveModel({ model, modelRegistry, hasUI, ui });
 				if (!resolved.ok) {
@@ -80,19 +77,19 @@ export function registerObserverTrigger(pi: ExtensionAPI, runtime: Runtime): voi
 				}
 				runtime.resolveFailureNotified = false;
 
-				const records = await runObserver({
+				const observations = await runObserver({
 					model: resolved.model as any,
 					apiKey: resolved.apiKey,
 					headers: resolved.headers,
-					priorReflections: reflections.map(reflectionToPromptLine),
-					priorObservations: priorObservationLines,
+					priorReflections,
+					priorObservations,
 					chunk,
 					allowedSourceEntryIds: sourceEntryIds,
-					maxTurns: turnLimits.observerMaxTurnsPerRun,
-					thinkingLevel: runtime.config.thinkingLevel,
+					maxTurns: runtime.config.agentMaxTurns,
+					thinkingLevel: runtime.config.model?.thinking ?? "low",
 				});
-				if (!records || records.length === 0) {
-					debugLog("observer.empty", { coversFromId, coversUpToId });
+				if (!observations || observations.length === 0) {
+					debugLog("observer.empty", { coversUpToId });
 					if (hasUI && ui) ui.notify(
 						"Observational memory: observer returned no observations",
 						"warning",
@@ -100,24 +97,18 @@ export function registerObserverTrigger(pi: ExtensionAPI, runtime: Runtime): voi
 					return;
 				}
 
-				const observationTokens = records.reduce((sum, r) => sum + estimateStringTokens(r.content), 0);
-				const data: ObservationEntryData = {
-					records,
-					coversFromId,
-					coversUpToId,
-					tokenCount: observationTokens,
-				};
+				const data = buildObservationsRecordedData(observations, coversUpToId);
+				if (!data) return;
 				debugLog("observer.records", {
-					count: records.length,
-					observationTokens,
-					coversFromId,
+					count: observations.length,
+					observationTokens: observations.reduce((sum, observation) => sum + observation.tokenCount, 0),
 					coversUpToId,
-					records,
+					observations,
 				});
-				pi.appendEntry(OBSERVATION_CUSTOM_TYPE, data);
-				debugLog("observer.appended", { count: records.length, tokenCount: observationTokens, coversFromId, coversUpToId });
+				pi.appendEntry(OM_OBSERVATIONS_RECORDED, data);
+				debugLog("observer.appended", { count: observations.length, coversUpToId });
 				if (hasUI && ui) ui.notify(
-					`Observational memory: ${records.length} observation${records.length === 1 ? "" : "s"} recorded (~${observationTokens.toLocaleString()} tokens)`,
+					`Observational memory: ${observations.length} observation${observations.length === 1 ? "" : "s"} recorded`,
 					"info",
 				);
 			} catch (error) {

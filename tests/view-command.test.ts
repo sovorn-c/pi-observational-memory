@@ -1,52 +1,22 @@
 import { describe, expect, it, vi } from "vitest";
 
 import { registerViewCommand } from "../src/commands/view.js";
-import { observationPoolTokens } from "../src/compaction.js";
-import type { MemoryDetailsV3, MemoryDetailsV4, ObservationRecord, ReflectionRecord } from "../src/types.js";
-import { compactionEntry, messageEntry } from "./fixtures/session.js";
+import {
+	compactionEntry,
+	memoryDetails,
+	observation,
+	observationsDroppedEntry,
+	observationsRecordedEntry,
+	oldV2CompactionDetails,
+	oldV2ObservationEntry,
+	reflection,
+	reflectionsRecordedEntry,
+	textCustomMessage,
+	type TestEntry,
+} from "./fixtures/session.js";
 
-const committedObservation = {
-	id: "abc123def456",
-	content: "User confirmed exact source ids are required.",
-	timestamp: "2026-05-02 10:00",
-	relevance: "high",
-} satisfies ObservationRecord;
-
-const reflectionRecord = {
-	id: "111111111111",
-	content: "Structured reflection content.",
-	supportingObservationIds: [committedObservation.id],
-} satisfies ReflectionRecord;
-
-const legacyReflection = "Plain prior reflection.";
-
-const migratedLegacyReflectionRecord = {
-	id: "222222222222",
-	content: "Migrated legacy reflection content.",
-	supportingObservationIds: [],
-	legacy: true,
-} satisfies ReflectionRecord;
-
-function memoryDetailsV3(reflections: string[] = [legacyReflection]): MemoryDetailsV3 {
-	return {
-		type: "observational-memory",
-		version: 3,
-		observations: [committedObservation],
-		reflections,
-	};
-}
-
-function memoryDetailsV4(reflections: MemoryDetailsV4["reflections"] = [legacyReflection, reflectionRecord, migratedLegacyReflectionRecord]): MemoryDetailsV4 {
-	return {
-		type: "observational-memory",
-		version: 4,
-		observations: [committedObservation],
-		reflections,
-	};
-}
-
-async function runView(details: MemoryDetailsV3 | MemoryDetailsV4): Promise<string> {
-	let handler: ((args: string[], ctx: unknown) => Promise<void>) | undefined;
+function setup(entries: TestEntry[]) {
+	let handler: ((args: unknown, ctx: any) => Promise<void>) | undefined;
 	const pi = {
 		registerCommand: vi.fn((name: string, command: { handler: typeof handler }) => {
 			expect(name).toBe("om-view");
@@ -54,55 +24,87 @@ async function runView(details: MemoryDetailsV3 | MemoryDetailsV4): Promise<stri
 		}),
 	};
 	const runtime = { ensureConfig: vi.fn() };
-	registerViewCommand(pi as never, runtime as never);
-	if (!handler) throw new Error("om-view handler was not registered");
-
+	registerViewCommand(pi as any, runtime as any);
+	if (!handler) throw new Error("view handler not registered");
 	const notify = vi.fn();
-	await handler([], {
-		cwd: process.cwd(),
-		sessionManager: {
-			getBranch: vi.fn(() => [
-				messageEntry({ id: "source-user", message: { role: "user", content: "source" } }),
-				compactionEntry({ id: "compaction-current", firstKeptEntryId: "source-user", details }),
-			]),
-		},
-		ui: { notify },
-	});
-
-	const [[message, level]] = notify.mock.calls;
-	expect(level).toBe("info");
-	return message;
+	const ctx = { cwd: "/tmp/project", ui: { notify }, sessionManager: { getBranch: () => entries } };
+	const run = async (args: unknown = []) => {
+		await handler!(args, ctx);
+		return notify.mock.calls.at(-1)?.[0] as string;
+	};
+	return { run, notify };
 }
 
-describe("/om-view", () => {
-	it("renders v4 reflection ids and legacy strings without extra labels", async () => {
-		const output = await runView(memoryDetailsV4());
+describe("V3 /om-view", () => {
+	it("renders no-memory visible output without V2 committed/pending language", async () => {
+		const output = await setup([]).run();
 
-		expect(output).toContain(`[${reflectionRecord.id}] ${reflectionRecord.content}`);
-		expect(output).toContain(`[${migratedLegacyReflectionRecord.id}] ${migratedLegacyReflectionRecord.content}`);
-		expect(output).toContain(legacyReflection);
-		expect(output).toContain(`[${committedObservation.id}] ${committedObservation.timestamp} [${committedObservation.relevance}] ${committedObservation.content}`);
-		expect(output).not.toContain("[object Object]");
-		expect(output).not.toContain("NaN");
-		expect(output).not.toContain("unrecallable");
-		expect(output).not.toContain("recallable");
-		expect(output).not.toContain("legacy: true");
-		expect(output).not.toContain("supportingObservationIds");
+		expect(output).toContain("Memory view: visible");
+		expect(output).toContain("0 reflections · 0 observations");
+		expect(output).toContain("── Reflections (0");
+		expect(output).toContain("── Observations (0");
+		expect(output).not.toContain("committed");
+		expect(output).not.toContain("pending");
 	});
 
-	it("counts observation tokens from rendered observation lines", async () => {
-		const output = await runView(memoryDetailsV4());
-		const renderedObsTokens = observationPoolTokens([committedObservation]);
+	it("default view renders latest visible om.folded memory", async () => {
+		const obs = observation("aaaaaaaaaaaa");
+		const ref = reflection("eeeeeeeeeeee", ["aaaaaaaaaaaa"]);
+		const entries = [
+			textCustomMessage("raw-1", "aaaa"),
+			observationsRecordedEntry("om-obs", { observations: [observation("bbbbbbbbbbbb")], coversUpToId: "raw-1" }),
+			compactionEntry("cmp", { firstKeptEntryId: "raw-1", details: memoryDetails({ observations: [obs], reflections: [ref] }) }),
+		];
 
-		expect(output).toContain(`1 observation (1 committed, 0 pending) · ~`);
-		expect(output).toContain(`Observations — committed (1 observation, ~${renderedObsTokens.toLocaleString()} tokens)`);
+		const output = await setup(entries).run();
+
+		expect(output).toContain("Memory view: visible");
+		expect(output).toContain("[eeeeeeeeeeee] Reflection eeeeeeeeeeee");
+		expect(output).toContain("[aaaaaaaaaaaa]");
+		expect(output).not.toContain("bbbbbbbbbbbb");
 	});
 
-	it("keeps v3 legacy reflections plain", async () => {
-		const output = await runView(memoryDetailsV3());
+	it("full view folds V3 ledger truth and ignores old V2 memory", async () => {
+		const obsA = observation("aaaaaaaaaaaa");
+		const obsB = observation("bbbbbbbbbbbb");
+		const ref = reflection("eeeeeeeeeeee", ["bbbbbbbbbbbb"]);
+		const entries = [
+			textCustomMessage("raw-1", "aaaa"),
+			oldV2ObservationEntry("v2-obs"),
+			compactionEntry("cmp-v2", { firstKeptEntryId: "raw-1", details: oldV2CompactionDetails() }),
+			observationsRecordedEntry("om-obs", { observations: [obsA, obsB], coversUpToId: "raw-1" }),
+			reflectionsRecordedEntry("om-ref", { reflections: [ref], coversUpToId: "om-obs" }),
+			observationsDroppedEntry("om-drop", { observationIds: ["aaaaaaaaaaaa"], coversUpToId: "om-ref" }),
+		];
 
-		expect(output).toContain(legacyReflection);
-		expect(output).not.toContain(`[${reflectionRecord.id}]`);
-		expect(output).not.toContain("[object Object]");
+		const output = await setup(entries).run(["full"]);
+
+		expect(output).toContain("Memory view: full");
+		expect(output).toContain("[eeeeeeeeeeee] Reflection eeeeeeeeeeee");
+		expect(output).toContain("[bbbbbbbbbbbb]");
+		expect(output).not.toContain("[aaaaaaaaaaaa]");
+		expect(output).not.toContain("v2-obs");
+		expect(output).not.toContain("observational-memory");
+	});
+
+	it("diff view renders visible/full drift", async () => {
+		const obsA = observation("aaaaaaaaaaaa");
+		const obsB = observation("bbbbbbbbbbbb");
+		const ref = reflection("eeeeeeeeeeee", ["bbbbbbbbbbbb"]);
+		const entries = [
+			textCustomMessage("raw-1", "aaaa"),
+			compactionEntry("cmp", { firstKeptEntryId: "raw-1", details: memoryDetails({ observations: [obsA], reflections: [] }) }),
+			observationsRecordedEntry("om-obs", { observations: [obsA, obsB], coversUpToId: "raw-1" }),
+			reflectionsRecordedEntry("om-ref", { reflections: [ref], coversUpToId: "om-obs" }),
+		];
+
+		const output = await setup(entries).run(["diff"]);
+
+		expect(output).toContain("Memory diff: visible vs full");
+		expect(output).toContain("+1 observations, +1 reflections");
+		expect(output).toContain("── Observations only in full (1) ──");
+		expect(output).toContain("[bbbbbbbbbbbb]");
+		expect(output).toContain("── Reflections only in full (1) ──");
+		expect(output).toContain("[eeeeeeeeeeee]");
 	});
 });

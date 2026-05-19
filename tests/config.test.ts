@@ -1,195 +1,122 @@
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { tmpdir } from "node:os";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const mock = vi.hoisted(() => ({ agentDir: "" }));
 
-vi.mock("@mariozechner/pi-coding-agent", () => ({
+vi.mock("@earendil-works/pi-coding-agent", () => ({
 	getAgentDir: () => mock.agentDir,
 }));
 
-import { loadConfig, readEnvConfig, resolveTurnLimits } from "../src/config.js";
+import { DEFAULTS, loadConfig, readEnvConfig } from "../src/config.js";
 
-let rootDir = "";
-let cwd = "";
-
-function writeJson(path: string, value: unknown): void {
+function writeJson(path: string, value: unknown) {
+	mkdirSync(join(path, ".."), { recursive: true });
 	writeFileSync(path, JSON.stringify(value), "utf-8");
 }
 
-beforeEach(() => {
-	rootDir = mkdtempSync(join(tmpdir(), "om-config-test-"));
-	mock.agentDir = join(rootDir, "agent");
-	cwd = join(rootDir, "project");
-	mkdirSync(mock.agentDir, { recursive: true });
-	mkdirSync(join(cwd, ".pi"), { recursive: true });
-});
+describe("V3 config", () => {
+	let root: string;
+	let cwd: string;
+	let agentDir: string;
 
-afterEach(() => {
-	if (rootDir) rmSync(rootDir, { recursive: true, force: true });
-});
-
-describe("readEnvConfig", () => {
-	it("parses passive truthy and falsy env values", () => {
-		for (const value of ["1", "true", "yes", "on", " TRUE "]) {
-			expect(readEnvConfig({ PI_OBSERVATIONAL_MEMORY_PASSIVE: value })).toEqual({ passive: true });
-		}
-		for (const value of ["0", "false", "no", "off", " OFF "]) {
-			expect(readEnvConfig({ PI_OBSERVATIONAL_MEMORY_PASSIVE: value })).toEqual({ passive: false });
-		}
+	beforeEach(() => {
+		root = `${tmpdir()}/om-v3-config-${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+		cwd = join(root, "project");
+		agentDir = join(root, "agent");
+		mkdirSync(cwd, { recursive: true });
+		mkdirSync(agentDir, { recursive: true });
+		mock.agentDir = agentDir;
 	});
 
-	it("ignores unset or invalid passive env values", () => {
-		expect(readEnvConfig({})).toEqual({});
+	afterEach(() => {
+		rmSync(root, { recursive: true, force: true });
+	});
+
+	it("uses V3 defaults", () => {
+		expect(DEFAULTS).toEqual({
+			observeAfterTokens: 1000,
+			reflectAfterTokens: 5000,
+			compactAfterTokens: 50000,
+			observationsPoolMaxTokens: 30000,
+			agentMaxTurns: 16,
+			passive: false,
+			debugLog: false,
+		});
+		expect(loadConfig(cwd, {})).toEqual(DEFAULTS);
+	});
+
+	it("merges global, project, and env V3 settings in order", () => {
+		writeJson(join(agentDir, "settings.json"), {
+			"observational-memory": {
+				observeAfterTokens: 10,
+				reflectAfterTokens: 20,
+				compactAfterTokens: 30,
+				observationsPoolMaxTokens: 40,
+				agentMaxTurns: 5,
+				model: { provider: "anthropic", id: "global", thinking: "medium" },
+				passive: false,
+				debugLog: true,
+			},
+		});
+		writeJson(join(cwd, ".pi", "settings.json"), {
+			"observational-memory": {
+				observeAfterTokens: 100,
+				model: { provider: "openai", id: "project", thinking: "low" },
+			},
+		});
+
+		expect(loadConfig(cwd, { PI_OBSERVATIONAL_MEMORY_PASSIVE: "true" })).toMatchObject({
+			observeAfterTokens: 100,
+			reflectAfterTokens: 20,
+			compactAfterTokens: 30,
+			observationsPoolMaxTokens: 40,
+			agentMaxTurns: 5,
+			model: { provider: "openai", id: "project", thinking: "low" },
+			passive: true,
+			debugLog: true,
+		});
+	});
+
+	it("ignores invalid V3 values", () => {
+		writeJson(join(cwd, ".pi", "settings.json"), {
+			"observational-memory": {
+				observeAfterTokens: -1,
+				reflectAfterTokens: 0,
+				compactAfterTokens: 1.5,
+				observationsPoolMaxTokens: "30000",
+				agentMaxTurns: null,
+				model: { provider: "anthropic", id: "", thinking: "huge" },
+				passive: "yes",
+				debugLog: "true",
+			},
+		});
+
+		expect(loadConfig(cwd, {})).toEqual(DEFAULTS);
+	});
+
+	it("ignores old V2 settings without warnings or aliases", () => {
+		writeJson(join(cwd, ".pi", "settings.json"), {
+			"observational-memory": {
+				observationThresholdTokens: 10,
+				compactionThresholdTokens: 20,
+				reflectionThresholdTokens: 30,
+				compactionModel: { provider: "anthropic", id: "old" },
+				thinkingLevel: "high",
+				observerMaxTurnsPerRun: 2,
+				reflectorMaxTurnsPerPass: 3,
+				prunerMaxTurnsPerPass: 4,
+				compactionMaxToolCalls: 5,
+			},
+		});
+
+		expect(loadConfig(cwd, {})).toEqual(DEFAULTS);
+	});
+
+	it("parses passive env override", () => {
+		expect(readEnvConfig({ PI_OBSERVATIONAL_MEMORY_PASSIVE: "on" })).toEqual({ passive: true });
+		expect(readEnvConfig({ PI_OBSERVATIONAL_MEMORY_PASSIVE: "0" })).toEqual({ passive: false });
 		expect(readEnvConfig({ PI_OBSERVATIONAL_MEMORY_PASSIVE: "maybe" })).toEqual({});
-		expect(readEnvConfig({ PI_OBSERVATIONAL_MEMORY_PASSIVE: "" })).toEqual({});
-	});
-});
-
-describe("loadConfig", () => {
-	it("defaults passive mode and debug logging to false", () => {
-		expect(loadConfig(cwd, {})).toMatchObject({ passive: false, debugLog: false });
-	});
-
-	it("loads passive and debugLog from global and local settings with local precedence", () => {
-		writeJson(join(mock.agentDir, "settings.json"), {
-			"observational-memory": { passive: true, debugLog: true },
-		});
-		writeJson(join(cwd, ".pi", "settings.json"), {
-			"observational-memory": { passive: false, debugLog: false },
-		});
-
-		expect(loadConfig(cwd, {})).toMatchObject({ passive: false, debugLog: false });
-	});
-
-	it("env passive overrides local settings in both directions", () => {
-		writeJson(join(cwd, ".pi", "settings.json"), {
-			"observational-memory": { passive: false },
-		});
-		expect(loadConfig(cwd, { PI_OBSERVATIONAL_MEMORY_PASSIVE: "true" })).toMatchObject({ passive: true });
-
-		writeJson(join(cwd, ".pi", "settings.json"), {
-			"observational-memory": { passive: true },
-		});
-		expect(loadConfig(cwd, { PI_OBSERVATIONAL_MEMORY_PASSIVE: "false" })).toMatchObject({ passive: false });
-	});
-
-	it("ignores invalid env and non-boolean settings passive/debugLog values", () => {
-		writeJson(join(cwd, ".pi", "settings.json"), {
-			"observational-memory": { passive: "false", debugLog: "true" },
-		});
-		expect(loadConfig(cwd, { PI_OBSERVATIONAL_MEMORY_PASSIVE: "invalid" })).toMatchObject({ passive: false, debugLog: false });
-	});
-
-	it("loads turn-limit settings and deprecated compactionMaxToolCalls from settings", () => {
-		writeJson(join(cwd, ".pi", "settings.json"), {
-			"observational-memory": {
-				observerMaxTurnsPerRun: 2,
-				reflectorMaxTurnsPerPass: 3,
-				prunerMaxTurnsPerPass: 4,
-				compactionMaxToolCalls: 5,
-			},
-		});
-		expect(loadConfig(cwd, {})).toMatchObject({
-			observerMaxTurnsPerRun: 2,
-			reflectorMaxTurnsPerPass: 3,
-			prunerMaxTurnsPerPass: 4,
-			compactionMaxToolCalls: 5,
-		});
-	});
-
-	it("loads unified thinkingLevel from settings", () => {
-		for (const thinkingLevel of ["off", "minimal", "low", "medium", "high", "xhigh"]) {
-			writeJson(join(cwd, ".pi", "settings.json"), {
-				"observational-memory": { thinkingLevel },
-			});
-			expect(loadConfig(cwd, {})).toMatchObject({ thinkingLevel });
-		}
-	});
-
-	it("defaults unified thinkingLevel to low", () => {
-		expect(loadConfig(cwd, {})).toMatchObject({ thinkingLevel: "low" });
-	});
-
-	it("lets local thinkingLevel override global thinkingLevel", () => {
-		writeJson(join(mock.agentDir, "settings.json"), {
-			"observational-memory": { thinkingLevel: "high" },
-		});
-		writeJson(join(cwd, ".pi", "settings.json"), {
-			"observational-memory": { thinkingLevel: "off" },
-		});
-
-		expect(loadConfig(cwd, {})).toMatchObject({ thinkingLevel: "off" });
-	});
-
-	it("defaults effective turn-limit settings to 16", () => {
-		const config = loadConfig(cwd, {});
-		expect(config.observerMaxTurnsPerRun).toBeUndefined();
-		expect(config.reflectorMaxTurnsPerPass).toBeUndefined();
-		expect(config.prunerMaxTurnsPerPass).toBeUndefined();
-		expect(config.compactionMaxToolCalls).toBeUndefined();
-		expect(resolveTurnLimits(config)).toEqual({
-			observerMaxTurnsPerRun: 16,
-			reflectorMaxTurnsPerPass: 16,
-			prunerMaxTurnsPerPass: 16,
-		});
-	});
-
-	it("ignores invalid turn-limit settings and falls back to defaults", () => {
-		writeJson(join(cwd, ".pi", "settings.json"), {
-			"observational-memory": {
-				observerMaxTurnsPerRun: 0,
-				reflectorMaxTurnsPerPass: -1,
-				prunerMaxTurnsPerPass: 1.5,
-				compactionMaxToolCalls: "3",
-			},
-		});
-		const config = loadConfig(cwd, {});
-		expect(config.observerMaxTurnsPerRun).toBeUndefined();
-		expect(config.reflectorMaxTurnsPerPass).toBeUndefined();
-		expect(config.prunerMaxTurnsPerPass).toBeUndefined();
-		expect(config.compactionMaxToolCalls).toBeUndefined();
-		expect(resolveTurnLimits(config)).toEqual({
-			observerMaxTurnsPerRun: 16,
-			reflectorMaxTurnsPerPass: 16,
-			prunerMaxTurnsPerPass: 16,
-		});
-	});
-
-	it("ignores invalid thinkingLevel settings and falls back to defaults", () => {
-		writeJson(join(cwd, ".pi", "settings.json"), {
-			"observational-memory": { thinkingLevel: "disabled" },
-		});
-
-		expect(loadConfig(cwd, {})).toMatchObject({ thinkingLevel: "low" });
-	});
-
-	it("resolves deprecated compactionMaxToolCalls as reflector/pruner turn-limit fallback only", () => {
-		writeJson(join(cwd, ".pi", "settings.json"), {
-			"observational-memory": { compactionMaxToolCalls: 5 },
-		});
-		const limits = resolveTurnLimits(loadConfig(cwd, {}));
-		expect(limits).toEqual({
-			observerMaxTurnsPerRun: 16,
-			reflectorMaxTurnsPerPass: 5,
-			prunerMaxTurnsPerPass: 5,
-		});
-	});
-
-	it("lets role-specific turn-limit settings override deprecated compactionMaxToolCalls", () => {
-		writeJson(join(cwd, ".pi", "settings.json"), {
-			"observational-memory": {
-				observerMaxTurnsPerRun: 2,
-				reflectorMaxTurnsPerPass: 3,
-				prunerMaxTurnsPerPass: 4,
-				compactionMaxToolCalls: 5,
-			},
-		});
-		expect(resolveTurnLimits(loadConfig(cwd, {}))).toEqual({
-			observerMaxTurnsPerRun: 2,
-			reflectorMaxTurnsPerPass: 3,
-			prunerMaxTurnsPerPass: 4,
-		});
 	});
 });

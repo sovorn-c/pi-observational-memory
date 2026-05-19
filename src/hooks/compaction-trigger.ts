@@ -1,5 +1,5 @@
-import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
-import { rawTokensSinceLastCompaction } from "../branch.js";
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { rawTokensSinceLastCompaction, type Entry } from "../session-ledger/index.js";
 import type { Runtime } from "../runtime.js";
 
 /**
@@ -11,7 +11,7 @@ const RETRYABLE_ERROR_RE =
 	/overloaded|provider.?returned.?error|rate.?limit|too many requests|429|500|502|503|504|service.?unavailable|server.?error|internal.?error|network.?error|connection.?error|connection.?refused|connection.?lost|websocket.?closed|websocket.?error|other side closed|fetch failed|upstream.?connect|reset before headers|socket hang up|ended without|http2 request did not get a response|timed? out|timeout|terminated|retry delay/i;
 
 export function registerCompactionTrigger(pi: ExtensionAPI, runtime: Runtime): void {
-	pi.on("agent_end", (event, ctx) => {
+	pi.on("agent_end", (event: any, ctx: any) => {
 		runtime.ensureConfig(ctx.cwd);
 		if (runtime.config.passive === true) return;
 		if (runtime.compactInFlight) return;
@@ -31,9 +31,9 @@ export function registerCompactionTrigger(pi: ExtensionAPI, runtime: Runtime): v
 			return;
 		}
 
-		const entries = ctx.sessionManager.getBranch() as Parameters<typeof rawTokensSinceLastCompaction>[0];
+		const entries = ctx.sessionManager.getBranch() as Entry[];
 		const tokens = rawTokensSinceLastCompaction(entries);
-		if (tokens < runtime.config.compactionThresholdTokens) return;
+		if (tokens < runtime.config.compactAfterTokens) return;
 
 		// Capture ctx properties synchronously — the setTimeout + async work below
 		// may outlive the extension ctx (stale after session replacement/reload).
@@ -46,31 +46,22 @@ export function registerCompactionTrigger(pi: ExtensionAPI, runtime: Runtime): v
 		);
 
 		runtime.compactInFlight = true;
-		setTimeout(async () => {
-			if (runtime.observerPromise) {
-				try {
-					await runtime.observerPromise;
-				} catch {
-					// errors already surfaced via launchObserverTask
-				}
-			}
-			// After awaiting observerPromise, ctx may be stale.
-			// Use captured hasUI/ui for notification; wrap ctx access in try/catch.
+		setTimeout(() => {
 			try {
 				if (!ctx.isIdle()) {
 					runtime.compactInFlight = false;
 					if (hasUI) ui?.notify(
-						"Observational memory: compaction deferred — agent became busy after observer wait",
+						"Observational memory: compaction deferred — agent became busy before compaction",
 						"info",
 					);
 					return;
 				}
-				const currentEntries = ctx.sessionManager.getBranch() as Parameters<typeof rawTokensSinceLastCompaction>[0];
+				const currentEntries = ctx.sessionManager.getBranch() as Entry[];
 				const currentTokens = rawTokensSinceLastCompaction(currentEntries);
-				if (currentTokens < runtime.config.compactionThresholdTokens) {
+				if (currentTokens < runtime.config.compactAfterTokens) {
 					runtime.compactInFlight = false;
 					if (hasUI) ui?.notify(
-						"Observational memory: compaction skipped — another compaction already ran during observer wait",
+						"Observational memory: compaction skipped — another compaction already ran before deferred compaction",
 						"info",
 					);
 					return;
@@ -80,7 +71,7 @@ export function registerCompactionTrigger(pi: ExtensionAPI, runtime: Runtime): v
 						runtime.compactInFlight = false;
 						if (hasUI) ui?.notify("Observational memory: compaction complete", "info");
 					},
-					onError: (error) => {
+					onError: (error: { message: string }) => {
 						runtime.compactInFlight = false;
 						if (error.message === "Compaction cancelled") {
 							// We already notified the user with the real reason before returning { cancel: true }.

@@ -1,11 +1,9 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { registerCompactionTrigger } from "../src/hooks/compaction-trigger.js";
+import { compactionEntry, textCustomMessage, type TestEntry } from "./fixtures/session.js";
 
-/**
- * Helper: capture the event handler registered by registerCompactionTrigger.
- */
-function captureHandler() {
+function captureHandler(args: { compactAfterTokens?: number; passive?: boolean; compactInFlight?: boolean } = {}) {
 	let handler: ((event: unknown, ctx: unknown) => void) | undefined;
 	const pi = {
 		on: vi.fn((name: string, cb: typeof handler) => {
@@ -16,40 +14,36 @@ function captureHandler() {
 	const runtime = {
 		ensureConfig: vi.fn(),
 		config: {
-			observationThresholdTokens: 1,
-			compactionThresholdTokens: 50_000,
-			reflectionThresholdTokens: 1,
-			passive: false,
+			compactAfterTokens: args.compactAfterTokens ?? 3,
+			passive: args.passive ?? false,
 		},
-		observerInFlight: false,
-		compactInFlight: false,
-		observerPromise: null as Promise<void> | null,
-		launchObserverTask: vi.fn(),
+		compactInFlight: args.compactInFlight ?? false,
+		observerPromise: new Promise(() => {}),
+		reflectDropPromise: new Promise(() => {}),
 	};
-	registerCompactionTrigger(pi as never, runtime as never);
+	registerCompactionTrigger(pi as any, runtime as any);
 	if (!handler) throw new Error("agent_end handler was not registered");
 	return { handler, runtime };
 }
 
-/**
- * Build a fake ExtensionContext for the compaction trigger.
- * getBranch returns entries whose token count exceeds the threshold.
- */
-function fakeCtx(overrides?: Record<string, unknown>) {
-	// estimateStringTokens = ceil(length/4), threshold = 50_000
-	// Need >200k chars total across message entries to exceed threshold
+function agentEnd(errorMessage?: string) {
+	return {
+		type: "agent_end",
+		messages: [
+			{ role: "user", content: "hello" },
+			errorMessage
+				? { role: "assistant", content: [], stopReason: "error", errorMessage }
+				: { role: "assistant", content: "done", stopReason: "end_turn" },
+		],
+	};
+}
+
+function fakeCtx(branches: TestEntry[][], overrides: Record<string, unknown> = {}) {
+	let branchIndex = 0;
+	const getBranch = vi.fn(() => branches[Math.min(branchIndex++, branches.length - 1)]);
 	return {
 		cwd: "/tmp/project",
-		sessionManager: {
-			getBranch: vi.fn(() =>
-				Array.from({ length: 300 }, (_, i) => ({
-					id: `entry-${i}`,
-					type: "message",
-					message: { role: "user", content: "x".repeat(1000) },
-					timestamp: i,
-				})),
-			),
-		},
+		sessionManager: { getBranch },
 		hasUI: true,
 		ui: { notify: vi.fn() },
 		isIdle: vi.fn(() => true),
@@ -58,168 +52,132 @@ function fakeCtx(overrides?: Record<string, unknown>) {
 	};
 }
 
-describe("compaction trigger retry guard", () => {
-	it("triggers compaction on normal agent_end (no error)", () => {
-		const { handler, runtime } = captureHandler();
-		const ctx = fakeCtx();
+const dueBranch = [textCustomMessage("raw-1", "aaaaaaaaaaaa")]; // 3 tokens
+const belowBranch = [textCustomMessage("raw-1", "aaaa")]; // 1 token
 
-		handler(
-			{
-				type: "agent_end",
-				messages: [
-					{ role: "user", content: "hello" },
-					{ role: "assistant", content: "done", stopReason: "end_turn" },
-				],
-			},
-			ctx,
-		);
-
-		expect(runtime.compactInFlight).toBe(true);
+describe("V3 compaction trigger", () => {
+	beforeEach(() => {
+		vi.useFakeTimers();
 	});
 
-	it("skips compaction when last assistant has retryable network error", () => {
-		const { handler, runtime } = captureHandler();
-		const ctx = fakeCtx();
+	afterEach(() => {
+		vi.useRealTimers();
+	});
 
-		handler(
-			{
-				type: "agent_end",
-				messages: [
-					{ role: "user", content: "hello" },
-					{ role: "assistant", content: [], stopReason: "error", errorMessage: "fetch failed: connection lost" },
-				],
-			},
-			ctx,
+	it("does nothing below compactAfterTokens", async () => {
+		const { handler, runtime } = captureHandler({ compactAfterTokens: 3 });
+		const ctx = fakeCtx([belowBranch]);
+
+		handler(agentEnd(), ctx);
+		await vi.runAllTimersAsync();
+
+		expect(runtime.compactInFlight).toBe(false);
+		expect(ctx.compact).not.toHaveBeenCalled();
+	});
+
+	it("calls compact when compactAfterTokens is reached", async () => {
+		const { handler, runtime } = captureHandler({ compactAfterTokens: 3 });
+		const ctx = fakeCtx([dueBranch]);
+
+		handler(agentEnd(), ctx);
+		expect(runtime.compactInFlight).toBe(true);
+		await vi.runAllTimersAsync();
+
+		expect(ctx.compact).toHaveBeenCalledTimes(1);
+		expect(ctx.ui.notify).toHaveBeenCalledWith(
+			"Observational memory: compaction threshold reached (~3 tokens); triggering compaction",
+			"info",
 		);
+	});
+
+	it("skips passive mode", async () => {
+		const { handler, runtime } = captureHandler({ passive: true });
+		const ctx = fakeCtx([dueBranch]);
+
+		handler(agentEnd(), ctx);
+		await vi.runAllTimersAsync();
 
 		expect(runtime.compactInFlight).toBe(false);
 		expect(ctx.sessionManager.getBranch).not.toHaveBeenCalled();
+		expect(ctx.compact).not.toHaveBeenCalled();
 	});
 
-	it("skips compaction on 502 Bad Gateway", () => {
-		const { handler, runtime } = captureHandler();
-		const ctx = fakeCtx();
+	it("skips when compaction is already in flight", async () => {
+		const { handler } = captureHandler({ compactInFlight: true });
+		const ctx = fakeCtx([dueBranch]);
 
-		handler(
-			{
-				type: "agent_end",
-				messages: [
-					{ role: "user", content: "hello" },
-					{ role: "assistant", content: [], stopReason: "error", errorMessage: "502 Bad Gateway" },
-				],
-			},
-			ctx,
-		);
+		handler(agentEnd(), ctx);
+		await vi.runAllTimersAsync();
+
+		expect(ctx.sessionManager.getBranch).not.toHaveBeenCalled();
+		expect(ctx.compact).not.toHaveBeenCalled();
+	});
+
+	it("skips retryable assistant errors", async () => {
+		const { handler, runtime } = captureHandler();
+		const ctx = fakeCtx([dueBranch]);
+
+		handler(agentEnd("fetch failed: connection lost"), ctx);
+		await vi.runAllTimersAsync();
 
 		expect(runtime.compactInFlight).toBe(false);
+		expect(ctx.sessionManager.getBranch).not.toHaveBeenCalled();
+		expect(ctx.compact).not.toHaveBeenCalled();
 	});
 
-	it("skips compaction on overloaded error", () => {
-		const { handler, runtime } = captureHandler();
-		const ctx = fakeCtx();
+	it("does not await observer or reflect/drop promises before compacting", async () => {
+		const { handler } = captureHandler({ compactAfterTokens: 3 });
+		const ctx = fakeCtx([dueBranch]);
 
-		handler(
-			{
-				type: "agent_end",
-				messages: [
-					{ role: "user", content: "hello" },
-					{ role: "assistant", content: [], stopReason: "error", errorMessage: "overloaded_error: server is overloaded" },
-				],
-			},
-			ctx,
-		);
+		handler(agentEnd(), ctx);
+		await vi.runAllTimersAsync();
 
+		expect(ctx.compact).toHaveBeenCalledTimes(1);
+	});
+
+	it("defers compaction if context is no longer idle", async () => {
+		const { handler, runtime } = captureHandler({ compactAfterTokens: 3 });
+		const ctx = fakeCtx([dueBranch], { isIdle: vi.fn(() => false) });
+
+		handler(agentEnd(), ctx);
+		await vi.runAllTimersAsync();
+
+		expect(ctx.compact).not.toHaveBeenCalled();
 		expect(runtime.compactInFlight).toBe(false);
+		expect(ctx.ui.notify).toHaveBeenCalledWith(
+			"Observational memory: compaction deferred — agent became busy before compaction",
+			"info",
+		);
 	});
 
-	it("skips compaction on rate limit error", () => {
-		const { handler, runtime } = captureHandler();
-		const ctx = fakeCtx();
+	it("re-checks threshold after deferral and skips if another compaction already reduced pressure", async () => {
+		const { handler, runtime } = captureHandler({ compactAfterTokens: 3 });
+		const ctx = fakeCtx([dueBranch, belowBranch]);
 
-		handler(
-			{
-				type: "agent_end",
-				messages: [
-					{ role: "user", content: "hello" },
-					{ role: "assistant", content: [], stopReason: "error", errorMessage: "rate limit exceeded: too many requests" },
-				],
-			},
-			ctx,
-		);
+		handler(agentEnd(), ctx);
+		await vi.runAllTimersAsync();
 
+		expect(ctx.compact).not.toHaveBeenCalled();
 		expect(runtime.compactInFlight).toBe(false);
+		expect(ctx.ui.notify).toHaveBeenCalledWith(
+			"Observational memory: compaction skipped — another compaction already ran before deferred compaction",
+			"info",
+		);
 	});
 
-	it("triggers compaction when error is NOT retryable (e.g. context overflow)", () => {
-		const { handler, runtime } = captureHandler();
-		const ctx = fakeCtx();
+	it("counts raw tokens since the latest Pi compaction using V3 progress helpers", async () => {
+		const { handler } = captureHandler({ compactAfterTokens: 3 });
+		const branch = [
+			textCustomMessage("raw-1", "aaaaaaaaaaaa"),
+			compactionEntry("cmp-1", { firstKeptEntryId: "raw-2" }),
+			textCustomMessage("raw-2", "aaaa"),
+			textCustomMessage("raw-3", "bbbbbbbb"),
+		];
+		const ctx = fakeCtx([branch]);
 
-		// Context overflow is NOT retryable — Pi won't retry, so compaction should proceed
-		handler(
-			{
-				type: "agent_end",
-				messages: [
-					{ role: "user", content: "hello" },
-					{ role: "assistant", content: [], stopReason: "error", errorMessage: "context window exceeded" },
-				],
-			},
-			ctx,
-		);
+		handler(agentEnd(), ctx);
+		await vi.runAllTimersAsync();
 
-		expect(runtime.compactInFlight).toBe(true);
-	});
-
-	it("triggers compaction when assistant stopReason is not error", () => {
-		const { handler, runtime } = captureHandler();
-		const ctx = fakeCtx();
-
-		handler(
-			{
-				type: "agent_end",
-				messages: [
-					{ role: "user", content: "hello" },
-					{ role: "assistant", content: "done", stopReason: "tool_use" },
-				],
-			},
-			ctx,
-		);
-
-		expect(runtime.compactInFlight).toBe(true);
-	});
-
-	it("triggers compaction when no assistant message exists", () => {
-		const { handler, runtime } = captureHandler();
-		const ctx = fakeCtx();
-
-		handler(
-			{
-				type: "agent_end",
-				messages: [{ role: "user", content: "hello" }],
-			},
-			ctx,
-		);
-
-		expect(runtime.compactInFlight).toBe(true);
-	});
-
-	it("finds last assistant among multiple messages", () => {
-		const { handler, runtime } = captureHandler();
-		const ctx = fakeCtx();
-
-		// Earlier assistant succeeded, last one failed with retryable error
-		handler(
-			{
-				type: "agent_end",
-				messages: [
-					{ role: "user", content: "hello" },
-					{ role: "assistant", content: "ok", stopReason: "end_turn" },
-					{ role: "toolResult", content: "result" },
-					{ role: "assistant", content: [], stopReason: "error", errorMessage: "503 Service Unavailable" },
-				],
-			},
-			ctx,
-		);
-
-		expect(runtime.compactInFlight).toBe(false);
+		expect(ctx.compact).toHaveBeenCalledTimes(1);
 	});
 });

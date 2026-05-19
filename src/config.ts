@@ -1,85 +1,84 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import type { ModelThinkingLevel } from "@mariozechner/pi-ai";
-import { getAgentDir } from "@mariozechner/pi-coding-agent";
+import type { ModelThinkingLevel } from "@earendil-works/pi-ai";
+import { getAgentDir } from "@earendil-works/pi-coding-agent";
 
-export interface Config {
-	observationThresholdTokens: number;
-	compactionThresholdTokens: number;
-	reflectionThresholdTokens: number;
-	passive: boolean;
-	debugLog: boolean;
-	compactionModel?: { provider: string; id: string };
-	observerMaxTurnsPerRun?: number;
-	reflectorMaxTurnsPerPass?: number;
-	prunerMaxTurnsPerPass?: number;
-	thinkingLevel: ModelThinkingLevel;
-	/** @deprecated Use reflectorMaxTurnsPerPass and prunerMaxTurnsPerPass. */
-	compactionMaxToolCalls?: number;
+export interface ConfiguredModel {
+	provider: string;
+	id: string;
+	thinking?: ModelThinkingLevel;
 }
 
-export interface EffectiveTurnLimits {
-	observerMaxTurnsPerRun: number;
-	reflectorMaxTurnsPerPass: number;
-	prunerMaxTurnsPerPass: number;
+export interface Config {
+	observeAfterTokens: number;
+	reflectAfterTokens: number;
+	compactAfterTokens: number;
+	observationsPoolMaxTokens: number;
+	agentMaxTurns: number;
+	model?: ConfiguredModel;
+	passive: boolean;
+	debugLog: boolean;
 }
 
 export const DEFAULTS: Config = {
-	observationThresholdTokens: 1_000,
-	compactionThresholdTokens: 50_000,
-	reflectionThresholdTokens: 30_000,
+	observeAfterTokens: 1_000,
+	reflectAfterTokens: 5_000,
+	compactAfterTokens: 50_000,
+	observationsPoolMaxTokens: 30_000,
+	agentMaxTurns: 16,
 	passive: false,
 	debugLog: false,
-	thinkingLevel: "low",
 };
 
 export const THINKING_LEVEL_VALUES: readonly ModelThinkingLevel[] = ["off", "minimal", "low", "medium", "high", "xhigh"] as const;
 
 const SETTINGS_KEY = "observational-memory";
 const PASSIVE_ENV = "PI_OBSERVATIONAL_MEMORY_PASSIVE";
-const DEFAULT_MAX_TURNS = 16;
 
 function positiveIntegerOrUndefined(value: unknown): number | undefined {
 	return Number.isInteger(value) && typeof value === "number" && value > 0 ? value : undefined;
-}
-
-function normalizeTurnLimit<K extends keyof Config>(normalized: Partial<Config>, key: K): void {
-	if (!(key in normalized)) return;
-	const value = positiveIntegerOrUndefined(normalized[key]);
-	if (value === undefined) {
-		delete normalized[key];
-	} else {
-		(normalized as Record<K, number>)[key] = value;
-	}
 }
 
 function isThinkingLevel(value: unknown): value is ModelThinkingLevel {
 	return typeof value === "string" && (THINKING_LEVEL_VALUES as readonly string[]).includes(value);
 }
 
-function normalizeThinkingLevel(normalized: Partial<Config>): void {
-	if (!("thinkingLevel" in normalized)) return;
-	if (!isThinkingLevel(normalized.thinkingLevel)) delete normalized.thinkingLevel;
+function isRecord(value: unknown): value is Record<string, unknown> {
+	return typeof value === "object" && value !== null;
 }
 
-function normalizeSettingsConfig(value: Partial<Config>): Partial<Config> {
-	const normalized = { ...value };
-	if ("passive" in normalized && typeof normalized.passive !== "boolean") delete normalized.passive;
-	if ("debugLog" in normalized && typeof normalized.debugLog !== "boolean") delete normalized.debugLog;
-	normalizeTurnLimit(normalized, "observerMaxTurnsPerRun");
-	normalizeTurnLimit(normalized, "reflectorMaxTurnsPerPass");
-	normalizeTurnLimit(normalized, "prunerMaxTurnsPerPass");
-	normalizeTurnLimit(normalized, "compactionMaxToolCalls");
-	normalizeThinkingLevel(normalized);
+function nonEmptyString(value: unknown): string | undefined {
+	return typeof value === "string" && value.length > 0 ? value : undefined;
+}
+
+function normalizeModel(value: unknown): ConfiguredModel | undefined {
+	if (!isRecord(value)) return undefined;
+	const provider = nonEmptyString(value.provider);
+	const id = nonEmptyString(value.id);
+	if (!provider || !id) return undefined;
+	const model: ConfiguredModel = { provider, id };
+	if (isThinkingLevel(value.thinking)) model.thinking = value.thinking;
+	return model;
+}
+
+function normalizeSettingsConfig(value: Record<string, unknown>): Partial<Config> {
+	const normalized: Partial<Config> = {};
+	const numberKeys = [
+		"observeAfterTokens",
+		"reflectAfterTokens",
+		"compactAfterTokens",
+		"observationsPoolMaxTokens",
+		"agentMaxTurns",
+	] as const;
+	for (const key of numberKeys) {
+		const normalizedValue = positiveIntegerOrUndefined(value[key]);
+		if (normalizedValue !== undefined) normalized[key] = normalizedValue;
+	}
+	if (typeof value.passive === "boolean") normalized.passive = value.passive;
+	if (typeof value.debugLog === "boolean") normalized.debugLog = value.debugLog;
+	const model = normalizeModel(value.model);
+	if (model) normalized.model = model;
 	return normalized;
-}
-
-export function resolveTurnLimits(config: Config): EffectiveTurnLimits {
-	return {
-		observerMaxTurnsPerRun: config.observerMaxTurnsPerRun ?? DEFAULT_MAX_TURNS,
-		reflectorMaxTurnsPerPass: config.reflectorMaxTurnsPerPass ?? config.compactionMaxToolCalls ?? DEFAULT_MAX_TURNS,
-		prunerMaxTurnsPerPass: config.prunerMaxTurnsPerPass ?? config.compactionMaxToolCalls ?? DEFAULT_MAX_TURNS,
-	};
 }
 
 export function readEnvConfig(env: NodeJS.ProcessEnv = process.env): Partial<Config> {
@@ -96,7 +95,7 @@ function readNamespacedConfig(path: string): Partial<Config> {
 	try {
 		const raw = JSON.parse(readFileSync(path, "utf-8")) as Record<string, unknown>;
 		const nested = raw[SETTINGS_KEY];
-		return nested && typeof nested === "object" ? normalizeSettingsConfig(nested as Partial<Config>) : {};
+		return isRecord(nested) ? normalizeSettingsConfig(nested) : {};
 	} catch {
 		return {};
 	}

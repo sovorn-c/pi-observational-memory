@@ -24,9 +24,13 @@ export class Runtime {
 	configLoaded = false;
 	observerInFlight = false;
 	observerPromise: Promise<void> | null = null;
+	reflectDropInFlight = false;
+	reflectDropPromise: Promise<void> | null = null;
 	compactInFlight = false;
 	compactHookInFlight = false;
 	resolveFailureNotified = false;
+	lastObserverError: string | undefined;
+	lastReflectDropError: string | undefined;
 
 	ensureConfig(cwd: string): void {
 		if (this.configLoaded) return;
@@ -36,18 +40,18 @@ export class Runtime {
 
 	async resolveModel(ctx: ResolveCtx): Promise<ResolveResult> {
 		let model = ctx.model;
-		if (this.config.compactionModel) {
-			const configured = ctx.modelRegistry.find(this.config.compactionModel.provider, this.config.compactionModel.id);
+		if (this.config.model) {
+			const configured = ctx.modelRegistry.find(this.config.model.provider, this.config.model.id);
 			if (configured) {
 				model = configured;
 			} else if (ctx.hasUI && ctx.ui) {
 				ctx.ui.notify(
-					`Observational memory: configured model ${this.config.compactionModel.provider}/${this.config.compactionModel.id} not found, using session model`,
+					`Observational memory: configured model ${this.config.model.provider}/${this.config.model.id} not found, using session model`,
 					"warning",
 				);
 			}
 		}
-		if (!model) return { ok: false, reason: "no model available (session has no model and no compactionModel configured)" };
+		if (!model) return { ok: false, reason: "no model available (session has no model and no observational-memory model configured)" };
 		const auth = await ctx.modelRegistry.getApiKeyAndHeaders(model);
 		if (!auth.ok || !auth.apiKey) {
 			const provider = (model as { provider?: string }).provider ?? "unknown";
@@ -58,24 +62,46 @@ export class Runtime {
 
 	launchObserverTask(ctx: LaunchCtx, label: string, work: () => Promise<void>): Promise<void> {
 		this.observerInFlight = true;
-		// Capture ctx properties synchronously — after `await work()` the extension ctx
-		// may be stale (e.g. after ctx.newSession/fork/switchSession/reload), and accessing
-		// ctx.hasUI or ctx.ui on a stale proxy throws.
+		this.lastObserverError = undefined;
+		const promise = this.launchTrackedTask(ctx, label, work, (error) => {
+			this.lastObserverError = error;
+			this.observerInFlight = false;
+			if (this.observerPromise === promise) this.observerPromise = null;
+		});
+		this.observerPromise = promise;
+		return promise;
+	}
+
+	launchReflectDropTask(ctx: LaunchCtx, label: string, work: () => Promise<void>): Promise<void> {
+		this.reflectDropInFlight = true;
+		this.lastReflectDropError = undefined;
+		const promise = this.launchTrackedTask(ctx, label, work, (error) => {
+			this.lastReflectDropError = error;
+			this.reflectDropInFlight = false;
+			if (this.reflectDropPromise === promise) this.reflectDropPromise = null;
+		});
+		this.reflectDropPromise = promise;
+		return promise;
+	}
+
+	private launchTrackedTask(
+		ctx: LaunchCtx,
+		label: string,
+		work: () => Promise<void>,
+		onFinally: (error: string | undefined) => void,
+	): Promise<void> {
 		const hasUI = ctx.hasUI;
 		const ui = ctx.ui;
-		let promise!: Promise<void>;
-		promise = (async () => {
+		return (async () => {
+			let errorMessage: string | undefined;
 			try {
 				await work();
 			} catch (error) {
-				const msg = error instanceof Error ? error.message : String(error);
-				if (hasUI && ui) ui.notify(`Observational memory: ${label} failed: ${msg}`, "warning");
+				errorMessage = error instanceof Error ? error.message : String(error);
+				if (hasUI && ui) ui.notify(`Observational memory: ${label} failed: ${errorMessage}`, "warning");
 			} finally {
-				this.observerInFlight = false;
-				if (this.observerPromise === promise) this.observerPromise = null;
+				onFinally(errorMessage);
 			}
 		})();
-		this.observerPromise = promise;
-		return promise;
 	}
 }
