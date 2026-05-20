@@ -77,6 +77,25 @@ describe("V3 compaction hook", () => {
 		expect(runtime.compactHookInFlight).toBe(false);
 	});
 
+	it("first normal compaction writes covered observations without orphan reflections", async () => {
+		const obs1 = observation("aaaaaaaaaaaa", { sourceEntryIds: ["raw-1"], tokenCount: 10 });
+		const ref1 = reflection("eeeeeeeeeeee", ["aaaaaaaaaaaa"]);
+		const entries = [
+			textCustomMessage("raw-1", "aaaa"),
+			observationsRecordedEntry("om-aaaaaaaaaaaa", { observations: [obs1], coversUpToId: "raw-1" }),
+			reflectionsRecordedEntry("om-eeeeeeeeeeee", { reflections: [ref1], coversUpToId: "raw-1" }),
+		];
+		const { run } = setup({ entries, observationsPoolMaxTokens: 100 });
+
+		const result = await run("raw-1") as any;
+
+		expect(result.compaction.details.fullFold).toBe(false);
+		expect(result.compaction.details.observations.map((obs: any) => obs.id)).toEqual(["aaaaaaaaaaaa"]);
+		expect(result.compaction.details.reflections).toEqual([]);
+		expect(result.compaction.summary).toContain("## Observations");
+		expect(result.compaction.summary).not.toContain("## Reflections");
+	});
+
 	it("writes a normal V3 projection without applying new reflections or drops", async () => {
 		const obs1 = observation("aaaaaaaaaaaa", { tokenCount: 5 });
 		const obs2 = observation("bbbbbbbbbbbb", { tokenCount: 5 });
@@ -86,15 +105,15 @@ describe("V3 compaction hook", () => {
 			textCustomMessage("raw-1", "aaaa"),
 			observationsRecordedEntry("om-aaaaaaaaaaaa", { observations: [obs1], coversUpToId: "raw-1" }),
 			reflectionsRecordedEntry("om-eeeeeeeeeeee", { reflections: [ref1], coversUpToId: "raw-1" }),
-			compactionEntry("cmp-full", { firstKeptEntryId: "om-eeeeeeeeeeee", details: memoryDetails({ fullFold: true, observations: [obs1], reflections: [ref1] }) }),
+			compactionEntry("cmp-full", { firstKeptEntryId: "raw-1", details: memoryDetails({ fullFold: true, observations: [obs1], reflections: [ref1] }) }),
 			textCustomMessage("raw-2", "bbbb"),
 			observationsRecordedEntry("om-bbbbbbbbbbbb", { observations: [obs2], coversUpToId: "raw-2" }),
 			reflectionsRecordedEntry("om-ffffffffffff", { reflections: [ref2], coversUpToId: "raw-2" }),
-			observationsDroppedEntry("om-drop-2", { observationIds: ["aaaaaaaaaaaa"], coversUpToId: "om-ffffffffffff" }),
+			observationsDroppedEntry("om-drop-2", { observationIds: ["aaaaaaaaaaaa"], coversUpToId: "raw-2" }),
 		];
 		const { run } = setup({ entries, observationsPoolMaxTokens: 100 });
 
-		const result = await run("om-drop-2") as any;
+		const result = await run("raw-2") as any;
 
 		expect(result.compaction.details).toMatchObject({ type: "om.folded", version: 1, fullFold: false });
 		expect(result.compaction.details.observations.map((obs: any) => obs.id)).toEqual(["aaaaaaaaaaaa", "bbbbbbbbbbbb"]);
@@ -112,15 +131,15 @@ describe("V3 compaction hook", () => {
 			textCustomMessage("raw-1", "aaaa"),
 			observationsRecordedEntry("om-aaaaaaaaaaaa", { observations: [obs1], coversUpToId: "raw-1" }),
 			reflectionsRecordedEntry("om-eeeeeeeeeeee", { reflections: [ref1], coversUpToId: "raw-1" }),
-			compactionEntry("cmp-full", { firstKeptEntryId: "om-eeeeeeeeeeee", details: memoryDetails({ fullFold: true, observations: [obs1], reflections: [ref1] }) }),
+			compactionEntry("cmp-full", { firstKeptEntryId: "raw-1", details: memoryDetails({ fullFold: true, observations: [obs1], reflections: [ref1] }) }),
 			textCustomMessage("raw-2", "bbbb"),
 			observationsRecordedEntry("om-bbbbbbbbbbbb", { observations: [obs2], coversUpToId: "raw-2" }),
 			reflectionsRecordedEntry("om-ffffffffffff", { reflections: [ref2], coversUpToId: "raw-2" }),
-			observationsDroppedEntry("om-drop-2", { observationIds: ["aaaaaaaaaaaa"], coversUpToId: "om-ffffffffffff" }),
+			observationsDroppedEntry("om-drop-2", { observationIds: ["aaaaaaaaaaaa"], coversUpToId: "raw-2" }),
 		];
 		const { run } = setup({ entries, observationsPoolMaxTokens: 100 });
 
-		const result = await run("om-drop-2") as any;
+		const result = await run("raw-2") as any;
 
 		expect(result.compaction.details.fullFold).toBe(true);
 		expect(result.compaction.details.observations.map((obs: any) => obs.id)).toEqual(["bbbbbbbbbbbb"]);

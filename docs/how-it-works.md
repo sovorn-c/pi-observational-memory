@@ -69,7 +69,7 @@ V3 raw-token progress counts only source entries:
 
 Memory ledger entries and compaction entries do not add raw-token progress.
 
-Every V3 ledger entry has `data.coversUpToId`. That field is a progress watermark. Worker clocks count raw/source tokens after the latest valid watermark for that worker's ledger type:
+Every V3 ledger entry has `data.coversUpToId`. That field is a progress and projection watermark. Worker clocks count raw/source tokens after the latest valid watermark for that worker's ledger type:
 
 | Worker/trigger | Progress source |
 |---|---|
@@ -78,7 +78,7 @@ Every V3 ledger entry has `data.coversUpToId`. That field is a progress watermar
 | Dropper | latest `om.observations.dropped.data.coversUpToId` |
 | Auto-compaction | latest compaction boundary |
 
-The watermark is not provenance. Provenance lives in `sourceEntryIds` and `supportingObservationIds`.
+The watermark is also used to decide whether a memory ledger entry belongs to a bounded projection. It is not provenance. Provenance lives in `sourceEntryIds` and `supportingObservationIds`.
 
 ## Ledger data shapes
 
@@ -239,7 +239,7 @@ V3 uses projection helpers so commands, compaction, and recall do not each inven
 
 ### Full projection
 
-Full projection folds valid V3 observations, reflections, and drops from branch root through the requested boundary. Old V2 entries/details and invalid V3-shaped entries are ignored.
+Full projection folds valid V3 observations, reflections, and drops from branch root through the requested boundary. Memory entries are included by resolving their `data.coversUpToId` marker against the boundary, not by the physical position of the `om.*` custom entry. Old V2 entries/details, invalid V3-shaped entries, and dangling coverage markers are ignored.
 
 ### Visible projection
 
@@ -247,7 +247,7 @@ Visible projection without a boundary reads the latest V3 `om.folded` compaction
 
 ### Compaction projection
 
-When compaction runs, the projection helper decides whether this compaction is a full fold. It first builds the normal compaction projection: observations folded through `firstKeptEntryId`, with reflection/drop effects held stable from the latest full-fold boundary. It sums that projection's active observation `tokenCount`; if the total is at or above `observationsPoolMaxTokens`, it performs a full fold through `firstKeptEntryId`. Otherwise, it keeps the normal projection.
+When compaction runs, the projection helper decides whether this compaction is a full fold. It first builds the normal compaction projection: observations whose `coversUpToId` reaches `firstKeptEntryId`, with reflection/drop effects held stable from the latest full-fold boundary. If there is no previous full-fold boundary, normal compaction includes observations only and excludes reflections/drops. It sums that projection's active observation `tokenCount`; if the total is at or above `observationsPoolMaxTokens`, it performs a full fold through `firstKeptEntryId`, applying observations, reflections, and drops by coverage marker. Otherwise, it keeps the normal projection.
 
 ### Diff projection
 
@@ -336,7 +336,7 @@ V3 does not use V2 state shapes. Old V2 custom memory entries, old V2 compaction
 - Pi compaction summaries represent what the agent sees.
 - Compaction is deterministic and model-free.
 - Observer input is raw/source entries only.
-- `coversUpToId` is a progress watermark, not provenance.
+- `coversUpToId` is a progress/projection watermark, not provenance.
 - Kept observations and reflections are rendered without paraphrase.
 - Dropped observations remain recallable from ledger history.
 - Old V2 memory is ignored rather than migrated.

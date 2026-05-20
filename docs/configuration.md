@@ -102,7 +102,7 @@ Pi's own window-pressure compaction and manual compaction can still happen indep
 
 Default: `20000`.
 
-This controls V3's full-fold pressure. During compaction, the extension first builds the normal compaction projection: observations folded through the compaction boundary, with reflection/drop effects held stable from the latest full fold. If that projection's active observation tokens are at or above `observationsPoolMaxTokens`, compaction performs a full fold through the compaction boundary. Otherwise, it keeps reflection/drop effects stable from the latest full fold and projects only observations through the new boundary.
+This controls V3's full-fold pressure. During compaction, the extension first builds the normal compaction projection: observations whose `coversUpToId` reaches the compaction boundary, with reflection/drop effects held stable from the latest full fold. If there is no previous full fold, normal compaction includes observations only. If that projection's active observation tokens are at or above `observationsPoolMaxTokens`, compaction performs a full fold through the compaction boundary and applies observations, reflections, and drops by coverage marker. Otherwise, it keeps reflection/drop effects stable from the latest full fold and projects only observations through the new boundary.
 
 This is not a scheduling threshold for the reflector. Use `reflectAfterTokens` for reflector/dropper cadence.
 
