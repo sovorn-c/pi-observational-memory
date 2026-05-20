@@ -43,12 +43,13 @@ function setup(args: { entries: TestEntry[]; runtime?: Partial<any> }) {
 	registerStatusCommand(pi as any, runtime as any);
 	if (!handler) throw new Error("status handler not registered");
 	const notify = vi.fn();
-	const ctx = { cwd: "/tmp/project", ui: { notify }, sessionManager: { getBranch: () => args.entries } };
+	const theme = { fg: vi.fn((color: string, text: string) => `<${color}>${text}</${color}>`) };
+	const ctx = { cwd: "/tmp/project", ui: { notify, theme }, sessionManager: { getBranch: () => args.entries } };
 	const run = async () => {
 		await handler!(undefined, ctx);
 		return notify.mock.calls.at(-1)?.[0] as string;
 	};
-	return { run, notify };
+	return { run, notify, theme };
 }
 
 describe("V3 /om-status", () => {
@@ -56,10 +57,12 @@ describe("V3 /om-status", () => {
 		const output = await setup({ entries: [] }).run();
 
 		expect(output).toContain("── Memory ──");
-		expect(output).toContain("Observations: 0 active / 0 dropped");
-		expect(output).toContain("Reflections:  0");
+		expect(output).toContain("Observations: 0 recorded / 0 dropped / 0 visible");
+		expect(output).toContain("Reflections:  0 recorded / 0 visible");
 		expect(output).toContain("Next observation:");
 		expect(output).toContain("Next compaction:");
+		expect(output).not.toContain("Visible:");
+		expect(output).not.toContain("Drift:");
 		expect(output).not.toContain("committed");
 		expect(output).not.toContain("pending");
 	});
@@ -80,21 +83,24 @@ describe("V3 /om-status", () => {
 
 		const output = await setup({ entries }).run();
 
-		expect(output).toContain("Observations: 1 active / 1 dropped");
-		expect(output).toContain("Reflections:  1");
-		expect(output).toContain("Visible:      1 observations, 0 reflections");
-		expect(output).toContain("Drift:        +1 observations, +1 reflections, 1 visible observations dropped in full truth");
+		expect(output).toContain("Observations: 2 recorded / 1 dropped / 1 visible <toolDiffAdded>+1</toolDiffAdded> <toolDiffRemoved>-1</toolDiffRemoved>");
+		expect(output).toContain("Reflections:  1 recorded / 0 visible <toolDiffAdded>+1</toolDiffAdded>");
+		expect(output).not.toContain("Visible:");
+		expect(output).not.toContain("Drift:");
+		expect(output).not.toContain("full truth");
 		expect(output).not.toContain("v2-obs");
 		expect(output).not.toContain("observational-memory");
 	});
 
-	it("shows separate progress clocks and full-fold pool pressure", async () => {
+	it("shows separate progress clocks and observation/reflection pools", async () => {
 		const obs = observation("aaaaaaaaaaaa", { tokenCount: 5 });
+		const ref = reflection("eeeeeeeeeeee", ["aaaaaaaaaaaa"], { tokenCount: 3 });
 		const entries = [
 			textCustomMessage("raw-1", "aaaaaaaa"),
 			observationsRecordedEntry("om-obs", { observations: [obs], coversUpToId: "raw-1" }),
+			reflectionsRecordedEntry("om-ref", { reflections: [ref], coversUpToId: "raw-1" }),
 			textCustomMessage("raw-2", "bbbbbbbb"),
-			compactionEntry("cmp", { firstKeptEntryId: "raw-2", details: memoryDetails({ observations: [obs] }) }),
+			compactionEntry("cmp", { firstKeptEntryId: "raw-2", details: memoryDetails({ observations: [obs], reflections: [ref] }) }),
 		];
 
 		const output = await setup({ entries }).run();
@@ -106,8 +112,11 @@ describe("V3 /om-status", () => {
 		expect(output).toContain("Next drop:");
 		expect(output).toContain("Next compaction:");
 		expect(output).toContain("/ 30 tokens");
-		expect(output).toContain("Full fold pool:");
-		expect(output).toContain("/ 40 visible observation tokens");
+		expect(output).toContain("Observation pool:");
+		expect(output).toContain("~5 / 40 tokens (13%)");
+		expect(output).toContain("Reflection pool:  ~3 tokens");
+		expect(output).not.toContain("Full fold pool:");
+		expect(output).not.toContain("visible observation tokens");
 	});
 
 	it("shows passive mode, workers in flight, and last errors", async () => {

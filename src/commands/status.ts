@@ -20,6 +20,23 @@ function tokenSum(items: { tokenCount: number }[]): number {
 	return items.reduce((sum, item) => sum + item.tokenCount, 0);
 }
 
+type StatusTheme = {
+	fg(color: "toolDiffAdded" | "toolDiffRemoved", text: string): string;
+};
+
+function addedSuffix(theme: StatusTheme, count: number): string | undefined {
+	return count > 0 ? theme.fg("toolDiffAdded", `+${count.toLocaleString()}`) : undefined;
+}
+
+function removedSuffix(theme: StatusTheme, count: number): string | undefined {
+	return count > 0 ? theme.fg("toolDiffRemoved", `-${count.toLocaleString()}`) : undefined;
+}
+
+function appendSuffixes(line: string, suffixes: (string | undefined)[]): string {
+	const rendered = suffixes.filter((suffix): suffix is string => suffix !== undefined);
+	return rendered.length > 0 ? `${line} ${rendered.join(" ")}` : line;
+}
+
 export function registerStatusCommand(pi: ExtensionAPI, runtime: Runtime): void {
 	pi.registerCommand("om-status", {
 		description: "Show observational memory status",
@@ -31,9 +48,19 @@ export function registerStatusCommand(pi: ExtensionAPI, runtime: Runtime): void 
 			const full = fullProjection(entries);
 			const drift = diffProjection(visible, full);
 
-			const observationTokens = tokenSum(folded.activeObservations);
-			const reflectionTokens = tokenSum(folded.reflections);
 			const visibleObservationTokens = tokenSum(visible.observations);
+			const visibleReflectionTokens = tokenSum(visible.reflections);
+			const observationLine = appendSuffixes(
+				`Observations: ${folded.observations.length} recorded / ${folded.droppedObservationIds.size} dropped / ${visible.observations.length} visible`,
+				[
+					addedSuffix(ctx.ui.theme, drift.observationsOnlyInFull.length),
+					removedSuffix(ctx.ui.theme, drift.droppedOnlyInFull.length),
+				],
+			);
+			const reflectionLine = appendSuffixes(
+				`Reflections:  ${folded.reflections.length} recorded / ${visible.reflections.length} visible`,
+				[addedSuffix(ctx.ui.theme, drift.reflectionsOnlyInFull.length)],
+			);
 			const obsProgress = rawTokensSinceObservationCoverage(entries);
 			const reflectionProgress = rawTokensSinceReflectionCoverage(entries);
 			const dropProgress = rawTokensSinceDropCoverage(entries);
@@ -50,17 +77,16 @@ export function registerStatusCommand(pi: ExtensionAPI, runtime: Runtime): void 
 			const lines = [
 				...passiveLines,
 				"── Memory ──",
-				`Observations: ${folded.activeObservations.length} active / ${folded.droppedObservationIds.size} dropped (~${observationTokens.toLocaleString()} active tokens)`,
-				`Reflections:  ${folded.reflections.length} (~${reflectionTokens.toLocaleString()} tokens)`,
-				`Visible:      ${visible.observations.length} observations, ${visible.reflections.length} reflections (~${visibleObservationTokens.toLocaleString()} observation tokens)`,
-				`Drift:        +${drift.observationsOnlyInFull.length} observations, +${drift.reflectionsOnlyInFull.length} reflections, ${drift.droppedOnlyInFull.length} visible observations dropped in full truth`,
+				observationLine,
+				reflectionLine,
 				"",
 				"── Activity ──",
 				`Next observation: ~${obsProgress.toLocaleString()} / ${runtime.config.observeAfterTokens.toLocaleString()} tokens (${pct(obsProgress, runtime.config.observeAfterTokens)}%)`,
 				`Next reflection:  ~${reflectionProgress.toLocaleString()} / ${runtime.config.reflectAfterTokens.toLocaleString()} tokens (${pct(reflectionProgress, runtime.config.reflectAfterTokens)}%)`,
 				`Next drop:        ~${dropProgress.toLocaleString()} / ${runtime.config.reflectAfterTokens.toLocaleString()} tokens (${pct(dropProgress, runtime.config.reflectAfterTokens)}%)`,
 				`Next compaction:  ~${compactionProgress.toLocaleString()} / ${runtime.config.compactAfterTokens.toLocaleString()} tokens (${pct(compactionProgress, runtime.config.compactAfterTokens)}%)`,
-				`Full fold pool:   ~${visibleObservationTokens.toLocaleString()} / ${runtime.config.observationsPoolMaxTokens.toLocaleString()} visible observation tokens (${pct(visibleObservationTokens, runtime.config.observationsPoolMaxTokens)}%)`,
+				`Observation pool: ~${visibleObservationTokens.toLocaleString()} / ${runtime.config.observationsPoolMaxTokens.toLocaleString()} tokens (${pct(visibleObservationTokens, runtime.config.observationsPoolMaxTokens)}%)`,
+				`Reflection pool:  ~${visibleReflectionTokens.toLocaleString()} tokens`,
 			];
 
 			if (runtime.observerInFlight || runtime.reflectDropInFlight || runtime.compactInFlight || runtime.compactHookInFlight) {
