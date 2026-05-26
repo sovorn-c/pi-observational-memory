@@ -5,7 +5,6 @@ import {
 	diffProjection,
 	foldLedger,
 	fullProjection,
-	rawTokensSinceDropCoverage,
 	rawTokensSinceLastCompaction,
 	rawTokensSinceObservationCoverage,
 	rawTokensSinceReflectionCoverage,
@@ -48,9 +47,6 @@ export function registerStatusCommand(pi: ExtensionAPI, runtime: Runtime): void 
 			const visibleObservationTokens = tokenSum(visible.observations);
 			const visibleReflectionTokens = tokenSum(visible.reflections);
 			const activeObservationPool = observationPoolMetrics(folded.activeObservations, runtime.config.observationsPoolTargetTokens);
-			const dropperState = activeObservationPool.overTarget
-				? "over target; runs after next successful reflection"
-				: "under target";
 			const observationLine = appendSuffixes(
 				`Observations: ${folded.observations.length} recorded / ${folded.droppedObservationIds.size} dropped / ${folded.activeObservations.length} active / ${visible.observations.length} visible`,
 				[
@@ -64,7 +60,6 @@ export function registerStatusCommand(pi: ExtensionAPI, runtime: Runtime): void 
 			);
 			const obsProgress = rawTokensSinceObservationCoverage(entries);
 			const reflectionProgress = rawTokensSinceReflectionCoverage(entries);
-			const dropProgress = rawTokensSinceDropCoverage(entries);
 			const compactionProgress = rawTokensSinceLastCompaction(entries);
 
 			const passiveLines = runtime.config.passive === true
@@ -84,11 +79,9 @@ export function registerStatusCommand(pi: ExtensionAPI, runtime: Runtime): void 
 				"── Activity ──",
 				`Next observation: ~${obsProgress.toLocaleString()} / ${runtime.config.observeAfterTokens.toLocaleString()} tokens (${pct(obsProgress, runtime.config.observeAfterTokens)}%)`,
 				`Next reflection:  ~${reflectionProgress.toLocaleString()} / ${runtime.config.reflectAfterTokens.toLocaleString()} tokens (${pct(reflectionProgress, runtime.config.reflectAfterTokens)}%)`,
-				`Drop coverage:    ~${dropProgress.toLocaleString()} tokens since last successful drop`,
 				`Next compaction:  ~${compactionProgress.toLocaleString()} / ${runtime.config.compactAfterTokens.toLocaleString()} tokens (${pct(compactionProgress, runtime.config.compactAfterTokens)}%)`,
 				`Visible observation pool: ~${visibleObservationTokens.toLocaleString()} / ${runtime.config.observationsPoolMaxTokens.toLocaleString()} tokens (${pct(visibleObservationTokens, runtime.config.observationsPoolMaxTokens)}%)`,
 				`Active observation pool: ~${activeObservationPool.observationTokens.toLocaleString()} / ${runtime.config.observationsPoolTargetTokens.toLocaleString()} target tokens (${pct(activeObservationPool.observationTokens, runtime.config.observationsPoolTargetTokens)}%)`,
-				`Dropper: ${dropperState}`,
 				`Reflection pool:         ~${visibleReflectionTokens.toLocaleString()} tokens`,
 			];
 
