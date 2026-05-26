@@ -52,7 +52,7 @@ export function registerStatusCommand(pi: ExtensionAPI, runtime: Runtime): void 
 				? "over target; runs after next successful reflection"
 				: "under target";
 			const observationLine = appendSuffixes(
-				`Observations: ${folded.observations.length} recorded / ${folded.droppedObservationIds.size} dropped / ${visible.observations.length} visible`,
+				`Observations: ${folded.observations.length} recorded / ${folded.droppedObservationIds.size} dropped / ${folded.activeObservations.length} active / ${visible.observations.length} visible`,
 				[
 					addedSuffix(drift.observationsOnlyInFull.length),
 					removedSuffix(drift.droppedOnlyInFull.length),

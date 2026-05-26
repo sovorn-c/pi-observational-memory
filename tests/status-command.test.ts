@@ -58,7 +58,7 @@ describe("V3 /om-status", () => {
 		const output = await setup({ entries: [] }).run();
 
 		expect(output).toContain("── Memory ──");
-		expect(output).toContain("Observations: 0 recorded / 0 dropped / 0 visible");
+		expect(output).toContain("Observations: 0 recorded / 0 dropped / 0 active / 0 visible");
 		expect(output).toContain("Reflections:  0 recorded / 0 visible");
 		expect(output).toContain("Next observation:");
 		expect(output).toContain("Next compaction:");
@@ -84,7 +84,7 @@ describe("V3 /om-status", () => {
 
 		const output = await setup({ entries }).run();
 
-		expect(output).toContain("Observations: 2 recorded / 1 dropped / 1 visible +1 -1");
+		expect(output).toContain("Observations: 2 recorded / 1 dropped / 1 active / 1 visible +1 -1");
 		expect(output).toContain("Reflections:  1 recorded / 0 visible +1");
 		expect(output).toContain("Visible observation pool: ~5 / 40 tokens (13%)");
 		expect(output).toContain("Active observation pool: ~7 / 20 target tokens (35%)");
