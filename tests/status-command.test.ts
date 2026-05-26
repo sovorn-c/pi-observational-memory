@@ -30,6 +30,7 @@ function setup(args: { entries: TestEntry[]; runtime?: Partial<any> }) {
 			reflectAfterTokens: 20,
 			compactAfterTokens: 30,
 			observationsPoolMaxTokens: 40,
+			observationsPoolTargetTokens: 20,
 			passive: false,
 		},
 		consolidationInFlight: false,
@@ -86,7 +87,8 @@ describe("V3 /om-status", () => {
 		expect(output).toContain("Observations: 2 recorded / 1 dropped / 1 visible +1 -1");
 		expect(output).toContain("Reflections:  1 recorded / 0 visible +1");
 		expect(output).toContain("Visible observation pool: ~5 / 40 tokens (13%)");
-		expect(output).toContain("Active ledger pool:      ~7 / 40 tokens (18%)");
+		expect(output).toContain("Active ledger pool:      ~7 / 20 target tokens (35%)");
+		expect(output).toContain("Dropper: under target");
 		expect(output).not.toContain("Visible:");
 		expect(output).not.toContain("Drift:");
 		expect(output).not.toContain("full truth");
@@ -116,18 +118,32 @@ describe("V3 /om-status", () => {
 		expect(output).toContain("Next compaction:");
 		expect(output).toContain("/ 30 tokens");
 		expect(output).toContain("Visible observation pool: ~5 / 40 tokens (13%)");
-		expect(output).toContain("Active ledger pool:      ~5 / 40 tokens (13%)");
+		expect(output).toContain("Active ledger pool:      ~5 / 20 target tokens (25%)");
+		expect(output).toContain("Dropper: under target");
 		expect(output).toContain("Reflection pool:         ~3 tokens");
 		expect(output).not.toContain("Observation pool:");
 		expect(output).not.toContain("Full fold pool:");
 		expect(output).not.toContain("visible observation tokens");
 	});
 
+	it("shows over-target dropper state as waiting for successful reflection", async () => {
+		const obs = observation("aaaaaaaaaaaa", { tokenCount: 25 });
+		const entries = [
+			textCustomMessage("raw-1", "aaaaaaaa"),
+			observationsRecordedEntry("om-obs", { observations: [obs], coversUpToId: "raw-1" }),
+		];
+
+		const output = await setup({ entries }).run();
+
+		expect(output).toContain("Active ledger pool:      ~25 / 20 target tokens (100%)");
+		expect(output).toContain("Dropper: over target; runs after next successful reflection");
+	});
+
 	it("shows passive mode, consolidation in flight, compaction in flight, and stage-specific last errors", async () => {
 		const output = await setup({
 			entries: [],
 			runtime: {
-				config: { observeAfterTokens: 10, reflectAfterTokens: 20, compactAfterTokens: 30, observationsPoolMaxTokens: 40, passive: true },
+				config: { observeAfterTokens: 10, reflectAfterTokens: 20, compactAfterTokens: 30, observationsPoolMaxTokens: 40, observationsPoolTargetTokens: 20, passive: true },
 				consolidationInFlight: true,
 				consolidationPhase: "reflector",
 				compactInFlight: true,

@@ -11,7 +11,7 @@ V3 is ledger-centered: memory state is reconstructed by folding V3 ledger entrie
 | Surface | Purpose |
 |---|---|
 | `turn_end` observer trigger | Maybe run the observer in the background. |
-| `turn_end` reflect/drop trigger | Maybe run the due reflector and/or due dropper in one background lane. |
+| `turn_end` reflect/drop trigger | Maybe run the due reflector, then run dropper maintenance only after same-run successful reflection. |
 | `agent_end` compaction trigger | Maybe call `ctx.compact()` when idle and over `compactAfterTokens`. |
 | `session_before_compact` hook | Build the V3 compaction payload deterministically. |
 | `/om-status` | Show ledger counts, drift, progress clocks, and worker state. |
@@ -183,15 +183,16 @@ Reflect/drop also runs on `turn_end`, but only when the observer is not due.
 2. Skip if `passive` is true.
 3. Skip if observer or reflect/drop work is already in flight.
 4. Skip if observer progress has reached `observeAfterTokens`.
-5. Check the reflector raw-token clock against `reflectAfterTokens` and check dropper readiness against the folded active observation pool.
+5. Check the reflector raw-token clock against `reflectAfterTokens`.
 6. Resolve the model only for stages that are ready to run.
 7. Fold current ledger state.
 8. If reflector is due and observation coverage exists, run the reflector.
 9. Append non-empty `om.reflections.recorded` with `coversUpToId` set to the latest observation coverage marker.
-10. If the active ledger observation pool is at or above `observationsPoolMaxTokens` and has droppable non-critical observations, run the dropper after reflector. It can see same-turn reflections.
-11. Append non-empty `om.observations.dropped` with `coversUpToId` set to the earlier branch position of latest observation coverage and latest effective reflection coverage. If no reflection coverage exists yet, dropper bootstraps to observation coverage.
+10. Only after that same-run non-empty reflection append, check whether the folded active observation pool is over `observationsPoolTargetTokens`.
+11. If over target, run the dropper with same-turn reflections available. It computes a maximum drop count from tokens over target converted to an approximate observation count.
+12. Append non-empty `om.observations.dropped` with `coversUpToId` set to the earlier branch position of latest observation coverage and same-run reflection coverage.
 
-Reflector failure skips same-turn dropper when both were due. Dropper failure does not roll back already-appended reflections.
+Reflector no-output and reflector failure skip same-turn dropper. Dropper failure does not roll back already-appended reflections.
 
 ## Auto-compaction trigger
 
@@ -251,7 +252,7 @@ When compaction runs, the projection helper decides whether this compaction is a
 
 ### Diff projection
 
-Diff projection compares visible memory with full memory. `/om-status` uses this to show recorded-vs-visible drift. `/om-status` also reports the visible observation pool separately from the folded active ledger pool because compaction pressure and dropper pressure intentionally use different projections.
+Diff projection compares visible memory with full memory. `/om-status` uses this to show recorded-vs-visible drift. `/om-status` also reports the visible observation pool separately from the folded active ledger pool because compaction pressure and dropper maintenance intentionally use different projections and thresholds.
 
 ## Summary rendering
 
@@ -286,7 +287,8 @@ Shows:
 - recorded/visible reflection counts, with a plain `+N` drift suffix when full memory has extra reflections;
 - next observation/reflection/compaction token progress and drop coverage since the last successful drop;
 - visible observation pool pressure against `observationsPoolMaxTokens` from the current compaction projection;
-- active ledger pool pressure against `observationsPoolMaxTokens` from folded active observations;
+- active ledger pool pressure against `observationsPoolTargetTokens` from folded active observations;
+- dropper state explaining whether the active pool is under target or waiting for the next successful reflection;
 - reflection pool token total;
 - passive mode;
 - worker in-flight flags;

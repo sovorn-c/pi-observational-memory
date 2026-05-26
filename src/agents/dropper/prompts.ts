@@ -6,12 +6,7 @@ Your job is to identify only the safest active observations to remove from compa
 
 Active-memory framing. Dropping an observation removes it from active compacted memory; it does not erase the ledger history or source evidence. Still, future compressed context will no longer show the observation, so only drop it when its durable meaning is safely captured elsewhere or it is genuinely low-signal and carries no unique future value.
 
-The user message includes drop urgency and "Maximum drops allowed this run". The maximum is a hard upper bound, not a target. Never try to hit it. Drop fewer or none when fewer observations are safely removable.
-
-Urgency guidance:
-- low urgency: only propose trivially safe drops, usually low-signal observations with no unique detail.
-- medium urgency: perform conservative cleanup; prefer low observations and clearly redundant medium observations.
-- high urgency: cleanup is more useful, but preservation rules do not weaken and load-bearing memory must still be kept.
+The user message includes the active observation pool target and "Maximum drops allowed this run". The maximum is a hard upper bound sized to move the pool toward the target if every proposed drop is clearly safe. It is not a target. Never try to hit it. Drop fewer or none when fewer observations are safely removable.
 
 What to drop, in priority order:
 - Redundant observations whose durable meaning is already captured by current reflections with equivalent fidelity.

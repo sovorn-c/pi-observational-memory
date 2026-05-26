@@ -40,6 +40,7 @@ describe("V3 config", () => {
 			reflectAfterTokens: 20000,
 			compactAfterTokens: 81000,
 			observationsPoolMaxTokens: 20000,
+			observationsPoolTargetTokens: 10000,
 			agentMaxTurns: 16,
 			passive: false,
 			debugLog: false,
@@ -54,6 +55,7 @@ describe("V3 config", () => {
 				reflectAfterTokens: 20,
 				compactAfterTokens: 30,
 				observationsPoolMaxTokens: 40,
+				observationsPoolTargetTokens: 15,
 				agentMaxTurns: 5,
 				model: { provider: "anthropic", id: "global", thinking: "medium" },
 				passive: false,
@@ -72,6 +74,7 @@ describe("V3 config", () => {
 			reflectAfterTokens: 20,
 			compactAfterTokens: 30,
 			observationsPoolMaxTokens: 40,
+			observationsPoolTargetTokens: 15,
 			agentMaxTurns: 5,
 			model: { provider: "openai", id: "project", thinking: "low" },
 			passive: true,
@@ -86,6 +89,7 @@ describe("V3 config", () => {
 				reflectAfterTokens: 0,
 				compactAfterTokens: 1.5,
 				observationsPoolMaxTokens: "20000",
+				observationsPoolTargetTokens: "10000",
 				agentMaxTurns: null,
 				model: { provider: "anthropic", id: "", thinking: "huge" },
 				passive: "yes",
@@ -94,6 +98,38 @@ describe("V3 config", () => {
 		});
 
 		expect(loadConfig(cwd, {})).toEqual(DEFAULTS);
+	});
+
+	it("derives observation pool target from the final max when omitted", () => {
+		writeJson(join(cwd, ".pi", "settings.json"), {
+			"observational-memory": {
+				observationsPoolMaxTokens: 40,
+			},
+		});
+
+		expect(loadConfig(cwd, {})).toMatchObject({
+			observationsPoolMaxTokens: 40,
+			observationsPoolTargetTokens: 20,
+		});
+	});
+
+	it("falls back to derived target when explicit target is invalid for the final max", () => {
+		writeJson(join(agentDir, "settings.json"), {
+			"observational-memory": {
+				observationsPoolMaxTokens: 100,
+				observationsPoolTargetTokens: 80,
+			},
+		});
+		writeJson(join(cwd, ".pi", "settings.json"), {
+			"observational-memory": {
+				observationsPoolMaxTokens: 40,
+			},
+		});
+
+		expect(loadConfig(cwd, {})).toMatchObject({
+			observationsPoolMaxTokens: 40,
+			observationsPoolTargetTokens: 20,
+		});
 	});
 
 	it("ignores old V2 settings without warnings or aliases", () => {

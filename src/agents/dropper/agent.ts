@@ -5,14 +5,13 @@ import type { Static } from "typebox";
 import { AGENT_LOOP_MAX_TOKENS, boundedMaxTokens } from "../../model-budget.js";
 import { observationToSummaryLine, reflectionToSummaryLine, type Observation, type Reflection } from "../../session-ledger/index.js";
 import { DROPPER_SYSTEM } from "./prompts.js";
-import { dropUrgencyForFullness, observationPoolMetrics } from "./pool.js";
+import { observationPoolMetrics } from "./pool.js";
 export {
-	dropUrgencyForFullness,
 	maxDropCountForPool,
 	observationPoolFullness,
 	observationPoolMetrics,
 } from "./pool.js";
-export type { DropUrgency, ObservationPoolMetrics } from "./pool.js";
+export type { ObservationPoolMetrics } from "./pool.js";
 
 interface RunDropperArgs {
 	model: Model<any>;
@@ -20,7 +19,7 @@ interface RunDropperArgs {
 	headers?: Record<string, string>;
 	reflections: Reflection[];
 	observations: Observation[];
-	budgetTokens: number;
+	targetTokens: number;
 	signal?: AbortSignal;
 	agentLoop?: typeof agentLoop;
 	maxTurns?: number;
@@ -92,12 +91,11 @@ export function selectDropCandidates(
 }
 
 export async function runDropper(args: RunDropperArgs): Promise<string[] | undefined> {
-	const { model, apiKey, headers, reflections, observations, budgetTokens, signal } = args;
+	const { model, apiKey, headers, reflections, observations, targetTokens, signal } = args;
 	if (observations.length === 0) return undefined;
 
-	const metrics = observationPoolMetrics(observations, budgetTokens);
-	const { observationTokens, fullness, maxDropsAllowed } = metrics;
-	const urgency = dropUrgencyForFullness(fullness);
+	const metrics = observationPoolMetrics(observations, targetTokens);
+	const { observationTokens, fullness, tokensOverTarget, maxDropsAllowed } = metrics;
 	if (maxDropsAllowed <= 0) return undefined;
 
 	const proposedDropIds: string[] = [];
@@ -125,7 +123,7 @@ export async function runDropper(args: RunDropperArgs): Promise<string[] | undef
 	};
 
 	const fullnessPercent = Math.round(fullness * 100);
-	const userText = `CURRENT REFLECTIONS:\n${joinOrEmpty(reflections.map(reflectionToSummaryLine))}\n\nCURRENT OBSERVATIONS:\n${joinOrEmpty(observations.map(observationToSummaryLine))}\n\nObservation pool pressure: ~${observationTokens.toLocaleString()} tokens; target budget: ~${budgetTokens.toLocaleString()} tokens; fullness: ~${fullnessPercent.toLocaleString()}%.\nDrop urgency: ${urgency}.\nMaximum drops allowed this run: ${maxDropsAllowed.toLocaleString()} observation${maxDropsAllowed === 1 ? "" : "s"}.\nThis maximum is a hard upper bound, not a target. Drop fewer or none if fewer observations are clearly safe.`;
+	const userText = `CURRENT REFLECTIONS:\n${joinOrEmpty(reflections.map(reflectionToSummaryLine))}\n\nCURRENT OBSERVATIONS:\n${joinOrEmpty(observations.map(observationToSummaryLine))}\n\nActive observation pool: ~${observationTokens.toLocaleString()} tokens; target: ~${targetTokens.toLocaleString()} tokens; fullness against target: ~${fullnessPercent.toLocaleString()}%; over target by ~${tokensOverTarget.toLocaleString()} tokens.\nMaximum drops allowed this run: ${maxDropsAllowed.toLocaleString()} observation${maxDropsAllowed === 1 ? "" : "s"}. This maximum is sized to move the active pool toward the target if every proposed drop is clearly safe.\nThis maximum is a hard upper bound, not a target. Drop fewer or none if fewer observations are clearly safe.`;
 	const prompts: Message[] = [{ role: "user", content: [{ type: "text", text: userText }], timestamp: Date.now() }];
 	const context: AgentContext = { systemPrompt: DROPPER_SYSTEM, messages: [], tools: [dropObservations as AgentTool<any>] };
 	const reasoning = (model as { reasoning?: unknown }).reasoning;

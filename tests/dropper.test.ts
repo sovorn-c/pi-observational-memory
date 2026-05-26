@@ -1,7 +1,6 @@
 import { describe, expect, it } from "vitest";
 
 import {
-	dropUrgencyForFullness,
 	maxDropCountForPool,
 	normalizeDropObservationIds,
 	observationPoolFullness,
@@ -29,7 +28,7 @@ describe("V3 dropper agent", () => {
 		apiKey: "test",
 		reflections: [reflection("eeeeeeeeeeee", ["aaaaaaaaaaaa"])],
 		observations: [obsA, obsB, critical],
-		budgetTokens: 10,
+		targetTokens: 20,
 	};
 
 	it("computes observation pool fullness defensively", () => {
@@ -40,34 +39,26 @@ describe("V3 dropper agent", () => {
 		expect(observationPoolFullness(25, 100)).toBe(0.25);
 	});
 
-	it("maps pool fullness to drop urgency thresholds", () => {
-		expect(dropUrgencyForFullness(0.29)).toBe("low");
-		expect(dropUrgencyForFullness(0.30)).toBe("medium");
-		expect(dropUrgencyForFullness(0.59)).toBe("medium");
-		expect(dropUrgencyForFullness(0.60)).toBe("high");
-	});
-
-	it("computes max drops from pool fullness", () => {
+	it("computes max drops from token excess above target", () => {
 		const observations = Array.from({ length: 10 }, (_, index) =>
 			observation(`${index}`.padStart(12, "a"), { relevance: "low", tokenCount: 10 }),
 		);
 
-		expect(maxDropCountForPool(observations, 9, 100)).toBe(0);
-		expect(maxDropCountForPool(observations, 10, 100)).toBe(1);
-		expect(maxDropCountForPool(observations, 55, 100)).toBe(3);
-		expect(maxDropCountForPool(observations, 100, 100)).toBe(5);
-		expect(maxDropCountForPool(observations, 200, 100)).toBe(5);
+		expect(maxDropCountForPool(observations, 100, 100)).toBe(0);
+		expect(maxDropCountForPool(observations, 100, 90)).toBe(1);
+		expect(maxDropCountForPool(observations, 100, 50)).toBe(5);
+		expect(maxDropCountForPool(observations, 100, 0)).toBe(10);
 	});
 
-	it("excludes critical observations from the max-drop denominator", () => {
+	it("uses active observation count for target-return max drops while critical ids remain protected later", () => {
 		const observations = [
-			observation("aaaaaaaaaaaa", { relevance: "low" }),
-			observation("bbbbbbbbbbbb", { relevance: "medium" }),
-			observation("cccccccccccc", { relevance: "critical" }),
-			observation("dddddddddddd", { relevance: "critical" }),
+			observation("aaaaaaaaaaaa", { relevance: "low", tokenCount: 10 }),
+			observation("bbbbbbbbbbbb", { relevance: "medium", tokenCount: 10 }),
+			observation("cccccccccccc", { relevance: "critical", tokenCount: 10 }),
+			observation("dddddddddddd", { relevance: "critical", tokenCount: 10 }),
 		];
 
-		expect(maxDropCountForPool(observations, 100, 100)).toBe(1);
+		expect(maxDropCountForPool(observations, 40, 20)).toBe(2);
 	});
 
 	it("keeps core dropper safety guidance in V3 terms", async () => {
@@ -88,16 +79,15 @@ describe("V3 dropper agent", () => {
 		expect(systemPrompt).toContain("You cannot merge observations");
 		expect(systemPrompt).toContain("Default action is KEEP");
 		expect(systemPrompt).toContain("When uncertain, keep");
-		expect(systemPrompt).toContain("low urgency");
-		expect(systemPrompt).toContain("high urgency");
-		expect(systemPrompt).toContain("preservation rules do not weaken");
+		expect(systemPrompt).toContain("active observation pool target");
 		expect(systemPrompt).not.toContain("drop freely");
 		expect(systemPrompt).not.toContain("pruner");
 		expect(systemPrompt).not.toContain("[coverage:");
 		expect(systemPrompt).not.toContain("Pass strategy");
+		expect(systemPrompt).not.toContain("Urgency guidance");
 	});
 
-	it("passes urgency and integer max drops as a hard upper bound", async () => {
+	it("passes target-return max drops as a hard upper bound", async () => {
 		let userText = "";
 		const loop = fakeAgentLoop((prompts) => {
 			userText = prompts[0].content[0].text;
@@ -105,11 +95,13 @@ describe("V3 dropper agent", () => {
 
 		await runDropper({ ...baseArgs, agentLoop: loop });
 
-		expect(userText).toContain("fullness: ~300%");
-		expect(userText).toContain("Drop urgency: high");
+		expect(userText).toContain("fullness against target: ~150%");
+		expect(userText).toContain("over target by ~10 tokens");
 		expect(userText).toContain("Maximum drops allowed this run: 1 observation");
+		expect(userText).toContain("sized to move the active pool toward the target");
 		expect(userText).toContain("hard upper bound, not a target");
 		expect(userText).toContain("Drop fewer or none");
+		expect(userText).not.toContain("Drop urgency");
 	});
 
 	it("normalizes active drop ids, filters invalid ids, dedupes, and protects critical observations", () => {
@@ -168,7 +160,7 @@ describe("V3 dropper agent", () => {
 		await expect(runDropper({ ...baseArgs, agentLoop: loop })).resolves.toBeUndefined();
 	});
 
-	it("skips the model below ten percent pool fullness", async () => {
+	it("skips the model at or below the target", async () => {
 		let called = false;
 		const loop = fakeAgentLoop(() => {
 			called = true;
@@ -176,8 +168,8 @@ describe("V3 dropper agent", () => {
 
 		await expect(runDropper({
 			...baseArgs,
-			observations: [observation("aaaaaaaaaaaa", { relevance: "low", tokenCount: 9 })],
-			budgetTokens: 100,
+			observations: [observation("aaaaaaaaaaaa", { relevance: "low", tokenCount: 10 })],
+			targetTokens: 10,
 			agentLoop: loop,
 		})).resolves.toBeUndefined();
 		expect(called).toBe(false);

@@ -33,6 +33,7 @@ The extension loads config once for its runtime. After changing settings, restar
     "reflectAfterTokens": 20000,
     "compactAfterTokens": 81000,
     "observationsPoolMaxTokens": 20000,
+    "observationsPoolTargetTokens": 10000,
     "agentMaxTurns": 16,
     "model": {
       "provider": "openrouter",
@@ -55,6 +56,7 @@ You can omit everything. Defaults work for ordinary sessions, and if `model` is 
 | `reflectAfterTokens` | positive integer | `20000` | Raw/source token threshold for reflector and dropper clocks. |
 | `compactAfterTokens` | positive integer | `81000` | Raw/source token threshold for proactive auto-compaction. |
 | `observationsPoolMaxTokens` | positive integer | `20000` | Normal compaction-projection observation-token pressure that makes compaction do a full fold. |
+| `observationsPoolTargetTokens` | positive integer below max | half of `observationsPoolMaxTokens` | Folded active-ledger observation target used by post-reflection dropper maintenance. |
 | `agentMaxTurns` | positive integer | `16` | Shared nested-agent turn cap for observer, reflector, and dropper. |
 | `model` | object | unset | Optional model override for observer, reflector, and dropper. |
 | `model.provider` | string | unset | Provider name in Pi's model registry. Required when `model` is set. |
@@ -65,7 +67,7 @@ You can omit everything. Defaults work for ordinary sessions, and if `model` is 
 
 Valid `model.thinking` values are `off`, `minimal`, `low`, `medium`, `high`, and `xhigh`.
 
-Invalid values are ignored. Positive-integer settings must be finite integers greater than zero.
+Invalid values are ignored. Positive-integer settings must be finite integers greater than zero. `observationsPoolTargetTokens` must also be below `observationsPoolMaxTokens`; if omitted or invalid, it is derived as `Math.floor(observationsPoolMaxTokens / 2)`.
 
 ## `observeAfterTokens`
 
@@ -81,9 +83,9 @@ Default: `20000`.
 
 The reflector uses this raw/source-token threshold. Reflector progress is counted after the latest `om.reflections.recorded.data.coversUpToId` marker.
 
-The dropper no longer uses `reflectAfterTokens` as its launch threshold. Dropper readiness is based on the folded active observation ledger: recorded observations minus dropped tombstones. When active observation tokens reach `observationsPoolMaxTokens` and there are non-critical observations that can be dropped, the dropper may run after the reflector and can see any same-turn new reflections.
+The dropper no longer uses `reflectAfterTokens` as its own launch threshold. Dropper work is gated by successful reflection: after the reflector records non-empty reflections in a consolidation pass, the dropper may run if the folded active observation ledger is over `observationsPoolTargetTokens`. It can see same-turn new reflections before deciding what to prune.
 
-Lower values distill reflections more often. Higher values reduce reflector model calls but leave more observations between reflection passes.
+Lower values distill reflections more often and therefore create more opportunities for post-reflection dropper maintenance. Higher values reduce reflector model calls but leave more observations between reflection and dropper opportunities.
 
 ## `compactAfterTokens`
 
@@ -99,13 +101,19 @@ Pi's own window-pressure compaction and manual compaction can still happen indep
 
 Default: `20000`.
 
-This controls two related observation-pool pressure checks.
+This controls V3's full-fold pressure. During compaction, the extension builds the normal compaction projection: observations whose `coversUpToId` reaches the compaction boundary, with reflection/drop effects held stable from the latest full fold. If there is no previous full fold, normal compaction includes observations only. If that projection's active observation tokens are at or above `observationsPoolMaxTokens`, compaction performs a full fold through the compaction boundary and applies observations, reflections, and drops by coverage marker. Otherwise, it keeps reflection/drop effects stable from the latest full fold and projects only observations through the new boundary.
 
-First, it controls V3's full-fold pressure. During compaction, the extension builds the normal compaction projection: observations whose `coversUpToId` reaches the compaction boundary, with reflection/drop effects held stable from the latest full fold. If there is no previous full fold, normal compaction includes observations only. If that projection's active observation tokens are at or above `observationsPoolMaxTokens`, compaction performs a full fold through the compaction boundary and applies observations, reflections, and drops by coverage marker. Otherwise, it keeps reflection/drop effects stable from the latest full fold and projects only observations through the new boundary.
+This is not the active-ledger dropper target and not a scheduling threshold for the reflector. Use `observationsPoolTargetTokens` for dropper active-ledger maintenance and `reflectAfterTokens` for reflector cadence.
 
-Second, it is the dropper high-water budget for the folded active observation ledger. Dropper readiness uses up-to-date active observations, not the latest visible compaction snapshot and not raw transcript tokens. The dropper still keeps its internal 10% low-fullness skip rule as a safety floor; that 10% rule is not the launch threshold.
+## `observationsPoolTargetTokens`
 
-This is not a scheduling threshold for the reflector. Use `reflectAfterTokens` for reflector cadence.
+Default: half of `observationsPoolMaxTokens`.
+
+This controls the folded active observation ledger target used by the dropper. If folded active observation tokens are at or below this target, the dropper has no maintenance work. If they are over target, the dropper can run only after the reflector records non-empty reflections in the same consolidation pass.
+
+When the dropper runs, it computes how many tokens are over target, converts that token excess to an approximate observation-count maximum using average active observation size, and passes that maximum to the model as a hard upper bound. The model may drop fewer or none, and code still rejects protected/invalid candidates such as `critical` observations.
+
+This target does not affect compaction full-fold pressure. Visible compaction pressure remains based on `observationsPoolMaxTokens`.
 
 ## `agentMaxTurns`
 
@@ -169,7 +177,7 @@ V3 is not backwards compatible with V2 settings. Old keys are silently ignored a
 |---|---|---|
 | `observationThresholdTokens` | `observeAfterTokens` | Rename. Same rough observer-cadence role. |
 | `compactionThresholdTokens` | `compactAfterTokens` | Rename. Same rough proactive-compaction role. |
-| `reflectionThresholdTokens` | `reflectAfterTokens` and/or `observationsPoolMaxTokens` | Split. Use `reflectAfterTokens` for reflector/dropper cadence; use `observationsPoolMaxTokens` for compaction full-fold pressure. |
+| `reflectionThresholdTokens` | `reflectAfterTokens`, `observationsPoolMaxTokens`, and/or `observationsPoolTargetTokens` | Split. Use `reflectAfterTokens` for reflector cadence, `observationsPoolMaxTokens` for compaction full-fold pressure, and `observationsPoolTargetTokens` for dropper active-ledger maintenance. |
 | `compactionModel` | `model` | Move `{ provider, id }` under `model`. |
 | `thinkingLevel` | `model.thinking` | Move under `model`. |
 | `observerMaxTurnsPerRun` | `agentMaxTurns` | Replace with one shared cap. |

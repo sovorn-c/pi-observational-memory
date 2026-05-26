@@ -14,6 +14,7 @@ export interface Config {
 	reflectAfterTokens: number;
 	compactAfterTokens: number;
 	observationsPoolMaxTokens: number;
+	observationsPoolTargetTokens: number;
 	agentMaxTurns: number;
 	model?: ConfiguredModel;
 	passive: boolean;
@@ -25,6 +26,7 @@ export const DEFAULTS: Config = {
 	reflectAfterTokens: 20_000,
 	compactAfterTokens: 81_000,
 	observationsPoolMaxTokens: 20_000,
+	observationsPoolTargetTokens: 10_000,
 	agentMaxTurns: 16,
 	passive: false,
 	debugLog: false,
@@ -37,6 +39,15 @@ const PASSIVE_ENV = "PI_OBSERVATIONAL_MEMORY_PASSIVE";
 
 function positiveIntegerOrUndefined(value: unknown): number | undefined {
 	return Number.isInteger(value) && typeof value === "number" && value > 0 ? value : undefined;
+}
+
+function validTargetOrUndefined(value: unknown, maxTokens: number): number | undefined {
+	const target = positiveIntegerOrUndefined(value);
+	return target !== undefined && target < maxTokens ? target : undefined;
+}
+
+function derivedObservationPoolTarget(maxTokens: number): number {
+	return Math.floor(maxTokens / 2);
 }
 
 function isThinkingLevel(value: unknown): value is ModelThinkingLevel {
@@ -68,6 +79,7 @@ function normalizeSettingsConfig(value: Record<string, unknown>): Partial<Config
 		"reflectAfterTokens",
 		"compactAfterTokens",
 		"observationsPoolMaxTokens",
+		"observationsPoolTargetTokens",
 		"agentMaxTurns",
 	] as const;
 	for (const key of numberKeys) {
@@ -104,11 +116,23 @@ function readNamespacedConfig(path: string): Partial<Config> {
 export function loadConfig(cwd: string, env: NodeJS.ProcessEnv = process.env): Config {
 	const globalPath = join(getAgentDir(), "settings.json");
 	const projectPath = join(cwd, ".pi", "settings.json");
+	const globalConfig = readNamespacedConfig(globalPath);
+	const projectConfig = readNamespacedConfig(projectPath);
+	const envConfig = readEnvConfig(env);
+	const merged = {
+		...DEFAULTS,
+		observationsPoolTargetTokens: undefined,
+		...globalConfig,
+		...projectConfig,
+		...envConfig,
+	};
+	const target = validTargetOrUndefined(
+		merged.observationsPoolTargetTokens,
+		merged.observationsPoolMaxTokens,
+	) ?? derivedObservationPoolTarget(merged.observationsPoolMaxTokens);
 
 	return {
-		...DEFAULTS,
-		...readNamespacedConfig(globalPath),
-		...readNamespacedConfig(projectPath),
-		...readEnvConfig(env),
+		...merged,
+		observationsPoolTargetTokens: target,
 	};
 }

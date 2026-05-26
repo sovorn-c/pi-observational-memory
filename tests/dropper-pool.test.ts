@@ -5,20 +5,22 @@ import { foldLedger } from "../src/session-ledger/index.js";
 import { observation, observationsDroppedEntry, observationsRecordedEntry, textCustomMessage } from "./fixtures/session.js";
 
 describe("V3 dropper active observation pool metrics", () => {
-	it("reports below-budget pools as not ready", () => {
+	it("reports below-target pools as not ready", () => {
 		const observations = [observation("aaaaaaaaaaaa", { relevance: "low", tokenCount: 20 })];
 
 		expect(observationPoolMetrics(observations, 100)).toMatchObject({
 			observationTokens: 20,
-			budgetTokens: 100,
+			targetTokens: 100,
+			tokensOverTarget: 0,
 			fullness: 0.2,
+			activeObservationCount: 1,
 			droppableCount: 1,
-			overBudget: false,
+			overTarget: false,
 			ready: false,
 		});
 	});
 
-	it("reports at-budget pools with droppable observations as ready", () => {
+	it("reports at-target pools as not ready", () => {
 		const observations = [
 			observation("aaaaaaaaaaaa", { relevance: "low", tokenCount: 50 }),
 			observation("bbbbbbbbbbbb", { relevance: "medium", tokenCount: 50 }),
@@ -28,22 +30,41 @@ describe("V3 dropper active observation pool metrics", () => {
 
 		expect(metrics.observationTokens).toBe(100);
 		expect(metrics.fullness).toBe(1);
+		expect(metrics.tokensOverTarget).toBe(0);
+		expect(metrics.maxDropsAllowed).toBe(0);
+		expect(metrics.overTarget).toBe(false);
+		expect(metrics.ready).toBe(false);
+	});
+
+	it("reports above-target pools as ready with target-return max drops", () => {
+		const observations = [
+			observation("aaaaaaaaaaaa", { relevance: "low", tokenCount: 50 }),
+			observation("bbbbbbbbbbbb", { relevance: "medium", tokenCount: 50 }),
+			observation("cccccccccccc", { relevance: "critical", tokenCount: 50 }),
+		];
+
+		const metrics = observationPoolMetrics(observations, 100);
+
+		expect(metrics.observationTokens).toBe(150);
+		expect(metrics.tokensOverTarget).toBe(50);
+		expect(metrics.activeObservationCount).toBe(3);
 		expect(metrics.droppableCount).toBe(2);
 		expect(metrics.maxDropsAllowed).toBe(1);
-		expect(metrics.overBudget).toBe(true);
+		expect(metrics.overTarget).toBe(true);
 		expect(metrics.ready).toBe(true);
 	});
 
-	it("does not report critical-only pools as ready", () => {
-		const observations = [observation("aaaaaaaaaaaa", { relevance: "critical", tokenCount: 100 })];
+	it("clamps target-return max drops to active observation count", () => {
+		const observations = [
+			observation("aaaaaaaaaaaa", { relevance: "low", tokenCount: 1 }),
+			observation("bbbbbbbbbbbb", { relevance: "critical", tokenCount: 1 }),
+		];
 
-		expect(observationPoolMetrics(observations, 100)).toMatchObject({
-			observationTokens: 100,
-			droppableCount: 0,
-			maxDropsAllowed: 0,
-			overBudget: true,
-			ready: false,
-		});
+		const metrics = observationPoolMetrics(observations, 0);
+
+		expect(metrics.tokensOverTarget).toBe(2);
+		expect(metrics.maxDropsAllowed).toBe(2);
+		expect(metrics.ready).toBe(true);
 	});
 
 	it("uses folded active observations so tombstones reduce readiness", () => {
@@ -60,7 +81,7 @@ describe("V3 dropper active observation pool metrics", () => {
 
 		expect(folded.activeObservations.map((obs) => obs.id)).toEqual(["bbbbbbbbbbbb"]);
 		expect(metrics.observationTokens).toBe(20);
-		expect(metrics.overBudget).toBe(false);
+		expect(metrics.overTarget).toBe(false);
 		expect(metrics.ready).toBe(false);
 	});
 });

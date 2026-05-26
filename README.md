@@ -209,6 +209,7 @@ A typical config:
     "reflectAfterTokens": 20000,
     "compactAfterTokens": 81000,
     "observationsPoolMaxTokens": 20000,
+    "observationsPoolTargetTokens": 10000,
     "agentMaxTurns": 16,
     "model": {
       "provider": "openrouter",
@@ -230,7 +231,8 @@ Most users can start with the defaults and tune only if they have a specific rea
 | `observeAfterTokens`        | `10000`       | Raw/source token threshold for observation runs.                                                  |
 | `reflectAfterTokens`        | `20000`       | Raw/source token threshold for reflection and memory maintenance.                                 |
 | `compactAfterTokens`        | `81000`       | Raw/source token threshold for proactive auto-compaction.                                         |
-| `observationsPoolMaxTokens` | `20000`       | Observation-token budget used for compaction full-fold pressure and dropper active-ledger pressure. |
+| `observationsPoolMaxTokens` | `20000`       | Observation-token budget used for compaction full-fold pressure.                                  |
+| `observationsPoolTargetTokens` | half of max | Active-ledger observation target used by post-reflection dropper maintenance.                      |
 | `agentMaxTurns`             | `16`          | Shared turn cap for background memory-agent loops.                                                |
 | `model`                     | session model | Optional memory-worker model override: `{ provider, id, thinking }`.                              |
 | `passive`                   | `false`       | Disables proactive background observation, reflection, maintenance, and auto-compaction triggers. |
@@ -300,7 +302,7 @@ Current behavior:
 * **Observation-centered memory.** The extension records useful session observations while you work.
 * **Durable reflections.** The extension distills stable facts that help the agent stay oriented over time.
 * **Fast compaction.** `session_before_compact` does not call a model or wait for background workers. It renders the current prepared memory state.
-* **Background memory work.** Observation and reflection work run from `turn_end` when their token clocks are due; dropper work runs when the folded active observation ledger reaches its configured pool budget.
+* **Background memory work.** Observation and reflection work run from `turn_end` when their token clocks are due; dropper work runs only after successful reflection and prunes the folded active observation ledger toward `observationsPoolTargetTokens`.
 * **Source-backed recall.** Observations and reflections can be traced back through the `recall` tool.
 * **Visible/full views.** `/om-view` shows visible memory and `/om-view full` shows the full current memory state. Use `/om-status` for visible-vs-full drift and for the separate visible observation pool vs active ledger pool.
 * **No V2 compatibility layer.** Old V2 settings and memory entries are ignored rather than migrated.
@@ -323,7 +325,7 @@ What this means in practice:
 | ---------------------------- | ------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------- |
 | `observationThresholdTokens` | `observeAfterTokens`                                    | Rename. Same rough role: observation cadence based on raw/source tokens.                                                                       |
 | `compactionThresholdTokens`  | `compactAfterTokens`                                    | Rename. Same rough role: proactive compaction cadence.                                                                                         |
-| `reflectionThresholdTokens`  | `reflectAfterTokens` and/or `observationsPoolMaxTokens` | Split. Use `reflectAfterTokens` for reflection scheduling. Use `observationsPoolMaxTokens` for compaction full-fold pressure and dropper active-ledger pressure. |
+| `reflectionThresholdTokens`  | `reflectAfterTokens`, `observationsPoolMaxTokens`, and/or `observationsPoolTargetTokens` | Split. Use `reflectAfterTokens` for reflection scheduling, `observationsPoolMaxTokens` for compaction full-fold pressure, and `observationsPoolTargetTokens` for dropper active-ledger maintenance. |
 | `compactionModel`            | `model`                                                 | Move `{ provider, id }` to `model`.                                                                                                            |
 | `thinkingLevel`              | `model.thinking`                                        | Move under `model`.                                                                                                                            |
 | `observerMaxTurnsPerRun`     | `agentMaxTurns`                                         | Replace with the shared memory-agent turn cap.                                                                                                 |
@@ -360,6 +362,7 @@ V3 equivalent:
     "reflectAfterTokens": 20000,
     "compactAfterTokens": 81000,
     "observationsPoolMaxTokens": 20000,
+    "observationsPoolTargetTokens": 10000,
     "agentMaxTurns": 12,
     "model": {
       "provider": "openrouter",
