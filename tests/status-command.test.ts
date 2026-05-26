@@ -87,7 +87,7 @@ describe("V3 /om-status", () => {
 		expect(output).toContain("Observations: 2 recorded / 1 dropped / 1 visible +1 -1");
 		expect(output).toContain("Reflections:  1 recorded / 0 visible +1");
 		expect(output).toContain("Visible observation pool: ~5 / 40 tokens (13%)");
-		expect(output).toContain("Active ledger pool:      ~7 / 20 target tokens (35%)");
+		expect(output).toContain("Active observation pool: ~7 / 20 target tokens (35%)");
 		expect(output).toContain("Dropper: under target");
 		expect(output).not.toContain("Visible:");
 		expect(output).not.toContain("Drift:");
@@ -96,7 +96,7 @@ describe("V3 /om-status", () => {
 		expect(output).not.toContain("observational-memory");
 	});
 
-	it("shows separate progress clocks, visible pool, active ledger pool, and reflection pool", async () => {
+	it("shows separate progress clocks, visible pool, active observation pool, and reflection pool", async () => {
 		const obs = observation("aaaaaaaaaaaa", { tokenCount: 5 });
 		const ref = reflection("eeeeeeeeeeee", ["aaaaaaaaaaaa"], { tokenCount: 3 });
 		const entries = [
@@ -118,7 +118,7 @@ describe("V3 /om-status", () => {
 		expect(output).toContain("Next compaction:");
 		expect(output).toContain("/ 30 tokens");
 		expect(output).toContain("Visible observation pool: ~5 / 40 tokens (13%)");
-		expect(output).toContain("Active ledger pool:      ~5 / 20 target tokens (25%)");
+		expect(output).toContain("Active observation pool: ~5 / 20 target tokens (25%)");
 		expect(output).toContain("Dropper: under target");
 		expect(output).toContain("Reflection pool:         ~3 tokens");
 		expect(output).not.toContain("Observation pool:");
@@ -135,7 +135,7 @@ describe("V3 /om-status", () => {
 
 		const output = await setup({ entries }).run();
 
-		expect(output).toContain("Active ledger pool:      ~25 / 20 target tokens (100%)");
+		expect(output).toContain("Active observation pool: ~25 / 20 target tokens (100%)");
 		expect(output).toContain("Dropper: over target; runs after next successful reflection");
 	});
 

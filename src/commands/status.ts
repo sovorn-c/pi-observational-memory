@@ -87,7 +87,7 @@ export function registerStatusCommand(pi: ExtensionAPI, runtime: Runtime): void 
 				`Drop coverage:    ~${dropProgress.toLocaleString()} tokens since last successful drop`,
 				`Next compaction:  ~${compactionProgress.toLocaleString()} / ${runtime.config.compactAfterTokens.toLocaleString()} tokens (${pct(compactionProgress, runtime.config.compactAfterTokens)}%)`,
 				`Visible observation pool: ~${visibleObservationTokens.toLocaleString()} / ${runtime.config.observationsPoolMaxTokens.toLocaleString()} tokens (${pct(visibleObservationTokens, runtime.config.observationsPoolMaxTokens)}%)`,
-				`Active ledger pool:      ~${activeObservationPool.observationTokens.toLocaleString()} / ${runtime.config.observationsPoolTargetTokens.toLocaleString()} target tokens (${pct(activeObservationPool.observationTokens, runtime.config.observationsPoolTargetTokens)}%)`,
+				`Active observation pool: ~${activeObservationPool.observationTokens.toLocaleString()} / ${runtime.config.observationsPoolTargetTokens.toLocaleString()} target tokens (${pct(activeObservationPool.observationTokens, runtime.config.observationsPoolTargetTokens)}%)`,
 				`Dropper: ${dropperState}`,
 				`Reflection pool:         ~${visibleReflectionTokens.toLocaleString()} tokens`,
 			];

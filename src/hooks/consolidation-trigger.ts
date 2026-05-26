@@ -307,7 +307,7 @@ async function runDropperStage(
 	}
 
 	if (ctx.hasUI) ctx.ui?.notify(
-		`Observational memory: dropper running after reflection — active ledger pool ~${metrics.observationTokens.toLocaleString()} / ${metrics.targetTokens.toLocaleString()} target tokens (${Math.round(metrics.fullness * 100).toLocaleString()}%)`,
+		`Observational memory: dropper running after reflection — active observation pool ~${metrics.observationTokens.toLocaleString()} / ${metrics.targetTokens.toLocaleString()} target tokens (${Math.round(metrics.fullness * 100).toLocaleString()}%)`,
 		"info",
 	);
 	const resolved = await resolveModel("dropper");

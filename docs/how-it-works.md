@@ -252,7 +252,7 @@ When compaction runs, the projection helper decides whether this compaction is a
 
 ### Diff projection
 
-Diff projection compares visible memory with full memory. `/om-status` uses this to show recorded-vs-visible drift. `/om-status` also reports the visible observation pool separately from the folded active ledger pool because compaction pressure and dropper maintenance intentionally use different projections and thresholds.
+Diff projection compares visible memory with full memory. `/om-status` uses this to show recorded-vs-visible drift. `/om-status` also reports the visible observation pool separately from the folded active observation pool because compaction pressure and dropper maintenance intentionally use different projections and thresholds.
 
 ## Summary rendering
 
@@ -287,7 +287,7 @@ Shows:
 - recorded/visible reflection counts, with a plain `+N` drift suffix when full memory has extra reflections;
 - next observation/reflection/compaction token progress and drop coverage since the last successful drop;
 - visible observation pool pressure against `observationsPoolMaxTokens` from the current compaction projection;
-- active ledger pool pressure against `observationsPoolTargetTokens` from folded active observations;
+- active observation pool pressure against `observationsPoolTargetTokens` from folded active observations;
 - dropper state explaining whether the active pool is under target or waiting for the next successful reflection;
 - reflection pool token total;
 - passive mode;

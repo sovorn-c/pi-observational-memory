@@ -321,7 +321,7 @@ describe("V3 consolidation trigger", () => {
 		expect(runtime.launchConsolidationTask).not.toHaveBeenCalled();
 	});
 
-	it("waits for successful reflection even when active ledger pool is over target", async () => {
+	it("waits for successful reflection even when active observation pool is over target", async () => {
 		const entries = [
 			textCustomMessage("raw-1", "aaaaaaaa"),
 			observationsRecordedEntry("om-obs", { observations: [obsA], coversUpToId: "raw-1" }),
