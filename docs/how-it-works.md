@@ -14,8 +14,8 @@ V3 is ledger-centered: memory state is reconstructed by folding V3 ledger entrie
 | `turn_end` reflect/drop trigger | Maybe run the due reflector, then run dropper maintenance only after same-run successful reflection. |
 | `agent_end` compaction trigger | Maybe call `ctx.compact()` when idle and over `compactAfterTokens`. |
 | `session_before_compact` hook | Build the V3 compaction payload deterministically. |
-| `/om-status` | Show ledger counts, drift, progress clocks, and worker state. |
-| `/om-view` | Show visible or full memory content and attempt to copy the rendered memory text. |
+| `/om:status` | Show ledger counts, drift, progress clocks, and worker state. |
+| `/om:view` | Show visible or full memory content and attempt to copy the rendered memory text. |
 | `recall` tool | Recover source evidence for a memory id. |
 
 ## Lifecycle overview
@@ -252,7 +252,7 @@ When compaction runs, the projection helper decides whether this compaction is a
 
 ### Diff projection
 
-Diff projection compares visible memory with full memory. `/om-status` uses this to show recorded-vs-visible drift. `/om-status` also reports the visible observation pool separately from the folded active observation pool because compaction pressure and dropper maintenance intentionally use different projections and thresholds.
+Diff projection compares visible memory with full memory. `/om:status` uses this to show recorded-vs-visible drift. `/om:status` also reports the visible observation pool separately from the folded active observation pool because compaction pressure and dropper maintenance intentionally use different projections and thresholds.
 
 ## Summary rendering
 
@@ -279,7 +279,7 @@ The renderer is deterministic. It does not call a model and does not rewrite mem
 
 ## Commands
 
-### `/om-status`
+### `/om:status`
 
 Shows:
 
@@ -294,15 +294,15 @@ Shows:
 - worker in-flight flags;
 - last observer and reflect/drop errors.
 
-### `/om-view`
+### `/om:view`
 
-Default mode shows visible memory and attempts to copy the rendered memory text to the clipboard. If no V3 compaction has happened yet, visible memory can be empty because nothing has been folded into `om.folded` details; use `/om-view full` to inspect recorded branch memory before the first compaction.
+Default mode shows visible memory and attempts to copy the rendered memory text to the clipboard. If no V3 compaction has happened yet, visible memory can be empty because nothing has been folded into `om.folded` details; use `/om:view full` to inspect recorded branch memory before the first compaction.
 
-Clipboard copy uses platform clipboard commands (`pbcopy`, `clip`, `wl-copy`, `xclip`, `xsel`, or `termux-clipboard-set`). If copying succeeds, Pi shows `Copied /om-view output to clipboard.` If copying fails, the command still prints the memory view and shows a warning. The clipboard text is only the rendered memory content; it does not include the success/failure line.
+Clipboard copy uses platform clipboard commands (`pbcopy`, `clip`, `wl-copy`, `xclip`, `xsel`, or `termux-clipboard-set`). If copying succeeds, Pi shows `Copied /om:view output to clipboard.` If copying fails, the command still prints the memory view and shows a warning. The clipboard text is only the rendered memory content; it does not include the success/failure line.
 
-### `/om-view full`
+### `/om:view full`
 
-Shows full V3 ledger truth at branch tip and attempts to copy the rendered memory text to the clipboard using the same success/failure behavior as default `/om-view`.
+Shows full V3 ledger truth at branch tip and attempts to copy the rendered memory text to the clipboard using the same success/failure behavior as default `/om:view`.
 
 ## Recall flow
 
@@ -325,7 +325,7 @@ Recall ignores old V2 memory by construction because it indexes only V3 ledger e
 - Observer priority prevents reflect/drop from advancing while source text is due for observation.
 - No-output workers append no empty ledger entries.
 - Invalid source/support/drop ids are filtered or rejected by code.
-- Background worker errors are recorded on runtime state and surfaced in `/om-status`.
+- Background worker errors are recorded on runtime state and surfaced in `/om:status`.
 - Compaction does not wait for background workers; it folds whatever ledger state is already present.
 - Historical or invalid coverage markers are tolerated by progress helpers instead of throwing.
 

@@ -13,7 +13,7 @@ import {
 } from "../session-ledger/index.js";
 
 function pct(current: number, total: number): number {
-	return total > 0 ? Math.min(100, Math.round((current / total) * 100)) : 0;
+	return total > 0 ? Math.round((current / total) * 100) : 0;
 }
 
 function tokenSum(items: { tokenCount: number }[]): number {
@@ -34,7 +34,7 @@ function appendSuffixes(line: string, suffixes: (string | undefined)[]): string 
 }
 
 export function registerStatusCommand(pi: ExtensionAPI, runtime: Runtime): void {
-	pi.registerCommand("om-status", {
+	pi.registerCommand("om:status", {
 		description: "Show observational memory status",
 		handler: async (_args, ctx) => {
 			runtime.ensureConfig(ctx.cwd);

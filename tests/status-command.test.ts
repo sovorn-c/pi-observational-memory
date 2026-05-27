@@ -19,7 +19,7 @@ function setup(args: { entries: TestEntry[]; runtime?: Partial<any> }) {
 	let handler: ((args: unknown, ctx: any) => Promise<void>) | undefined;
 	const pi = {
 		registerCommand: vi.fn((name: string, command: { handler: typeof handler }) => {
-			expect(name).toBe("om-status");
+			expect(name).toBe("om:status");
 			handler = command.handler;
 		}),
 	};
@@ -53,7 +53,7 @@ function setup(args: { entries: TestEntry[]; runtime?: Partial<any> }) {
 	return { run, notify };
 }
 
-describe("V3 /om-status", () => {
+describe("V3 /om:status", () => {
 	it("renders concise no-memory status without V2 committed/pending language", async () => {
 		const output = await setup({ entries: [] }).run();
 
@@ -131,7 +131,7 @@ describe("V3 /om-status", () => {
 
 		const output = await setup({ entries }).run();
 
-		expect(output).toContain("Active observation pool: ~25 / 20 target tokens (100%)");
+		expect(output).toContain("Active observation pool: ~25 / 20 target tokens (125%)");
 	});
 
 	it("shows passive mode, consolidation in flight, compaction in flight, and stage-specific last errors", async () => {

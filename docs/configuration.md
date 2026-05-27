@@ -151,7 +151,7 @@ Set `model` when you want the observer, reflector, and dropper to use a cheaper 
 
 Default: `false`.
 
-When `true`, the extension does not proactively run the observer, reflector/dropper lane, or auto-compaction trigger. Manual/Pi compaction hooks, `/om-status`, `/om-view`, and `recall` remain available.
+When `true`, the extension does not proactively run the observer, reflector/dropper lane, or auto-compaction trigger. Manual/Pi compaction hooks, `/om:status`, `/om:view`, and `recall` remain available.
 
 Environment override:
 

@@ -41,7 +41,7 @@ interface ViewCommandOptions {
 export function registerViewCommand(pi: ExtensionAPI, runtime: Runtime, options: ViewCommandOptions = {}): void {
 	const copyToClipboard = options.copyToClipboard ?? copyTextToClipboard;
 
-	pi.registerCommand("om-view", {
+	pi.registerCommand("om:view", {
 		description: "Print and copy observational memory content (visible by default, full for recorded memory)",
 		handler: async (args, ctx) => {
 			runtime.ensureConfig(ctx.cwd);
@@ -52,8 +52,8 @@ export function registerViewCommand(pi: ExtensionAPI, runtime: Runtime, options:
 				const copied = await copyToClipboard(output).catch(() => false);
 				ctx.ui.notify(
 					copied
-						? `${output}\n\nCopied /om-view output to clipboard.`
-						: `${output}\n\nWarning: failed to copy /om-view output to clipboard.`,
+						? `${output}\n\nCopied /om:view output to clipboard.`
+						: `${output}\n\nWarning: failed to copy /om:view output to clipboard.`,
 					"info",
 				);
 			};
@@ -64,7 +64,7 @@ export function registerViewCommand(pi: ExtensionAPI, runtime: Runtime, options:
 			}
 
 			if (mode && mode !== "visible") {
-				ctx.ui.notify("Usage: /om-view [full]", "info");
+				ctx.ui.notify("Usage: /om:view [full]", "info");
 				return;
 			}
 

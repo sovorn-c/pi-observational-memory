@@ -150,9 +150,9 @@ Progress counting uses raw/source tokens after the marker. Raw/source entries ar
 
 V3 distinguishes visible memory, full memory, and the drift between them:
 
-- **Visible memory** — what the latest `om.folded` compaction details made visible to the agent. This is what `/om-view` shows by default.
-- **Full memory** — full V3 ledger truth folded at the branch tip. This is what `/om-view full` shows.
-- **Drift** — the difference between visible and full memory. Use `/om-status` to inspect visible-vs-full drift.
+- **Visible memory** — what the latest `om.folded` compaction details made visible to the agent. This is what `/om:view` shows by default.
+- **Full memory** — full V3 ledger truth folded at the branch tip. This is what `/om:view full` shows.
+- **Drift** — the difference between visible and full memory. Use `/om:status` to inspect visible-vs-full drift.
 
 Visible and full memory can differ intentionally. Background ledger work may happen after the latest compaction, and normal compactions may avoid re-folding reflection/drop effects until full-fold pressure requires it.
 

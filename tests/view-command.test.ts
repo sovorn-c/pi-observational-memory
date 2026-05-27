@@ -15,14 +15,14 @@ import {
 	type TestEntry,
 } from "./fixtures/session.js";
 
-const COPY_SUCCESS = "Copied /om-view output to clipboard.";
-const COPY_FAILURE = "Warning: failed to copy /om-view output to clipboard.";
+const COPY_SUCCESS = "Copied /om:view output to clipboard.";
+const COPY_FAILURE = "Warning: failed to copy /om:view output to clipboard.";
 
 function setup(entries: TestEntry[], clipboardResult = true) {
 	let handler: ((args: unknown, ctx: any) => Promise<void>) | undefined;
 	const pi = {
 		registerCommand: vi.fn((name: string, command: { handler: typeof handler }) => {
-			expect(name).toBe("om-view");
+			expect(name).toBe("om:view");
 			handler = command.handler;
 		}),
 	};
@@ -56,7 +56,7 @@ function expectNoDiagnostics(output: string) {
 	expect(output).not.toContain("only in full");
 }
 
-describe("V3 /om-view", () => {
+describe("V3 /om:view", () => {
 	it("renders no-memory visible output as content-only sections and copies it", async () => {
 		const { output, clipboardText, copyToClipboard } = await setup([]).run();
 		const expected = [
@@ -162,6 +162,6 @@ describe("V3 /om-view", () => {
 
 		expect(copyToClipboard).not.toHaveBeenCalled();
 		expect(clipboardText).toBeUndefined();
-		expect(output).toBe("Usage: /om-view [full]");
+		expect(output).toBe("Usage: /om:view [full]");
 	});
 });
