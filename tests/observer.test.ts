@@ -50,6 +50,8 @@ describe("runObserver", () => {
 		expect(systemPrompt).toContain("sourceEntryIds");
 		expect(systemPrompt).toContain("zero observations");
 		expect(systemPrompt).toContain("The dropper will drop these first");
+		expect(systemPrompt).toContain("highest-resistance, load-bearing observations");
+		expect(systemPrompt).not.toContain("will NEVER be dropped");
 		expect(systemPrompt).not.toContain("pruner");
 	});
 

@@ -1,6 +1,11 @@
 import { describe, expect, it } from "vitest";
 
-import { runReflector, normalizeSupportingObservationIds } from "../src/agents/reflector/agent.js";
+import {
+	normalizeSupportingObservationIds,
+	observationToReflectorLine,
+	runReflector,
+	summarizeSupportIdCounts,
+} from "../src/agents/reflector/agent.js";
 import { hashId } from "../src/ids.js";
 import { estimateStringTokens } from "../src/tokens.js";
 import { observation, reflection } from "./fixtures/session.js";
@@ -58,7 +63,16 @@ describe("V3 reflector agent", () => {
 		expect(systemPrompt).toContain("zero reflections than to create one reflection per observation");
 		expect(systemPrompt).toContain("Most transient task-log observations");
 		expect(systemPrompt).toContain("files inspected, commands run, failed attempts, partial implementation, and current working state");
+		expect(systemPrompt).toContain("[coverage: none|partial|strong]");
+		expect(systemPrompt).toContain("Coverage tiers are review context");
+		expect(systemPrompt).toContain("Coverage is not a quota, target, priority score, or instruction to emit reflections");
+		expect(systemPrompt).toContain("Support ids and coverage stewardship");
+		expect(systemPrompt).toContain("First decide whether the reflection content passes the durable-value bar");
+		expect(systemPrompt).toContain("include all current observation ids whose durable meaning is preserved");
 		expect(systemPrompt).toContain("supportingObservationIds are not a checklist");
+		expect(systemPrompt).toContain("Do not add ids merely to improve coverage counts");
+		expect(systemPrompt).toContain("False or inflated support ids can cause unsafe downstream dropper pruning");
+		expect(systemPrompt).toContain("emit zero reflections even when observations have coverage: none");
 		expect(systemPrompt).toContain("BAD: completed: edited src/hooks/reflect-drop-trigger.ts");
 		expect(systemPrompt).toContain("GOOD: completed: V3 reflect/drop coverage now uses raw progress watermarks");
 		expect(systemPrompt).toContain("BAD: npm test passed");
@@ -74,8 +88,70 @@ describe("V3 reflector agent", () => {
 		expect(systemPrompt).toContain("Lead with the fact or pattern");
 		expect(systemPrompt).not.toContain("legacy/no-provenance");
 		expect(systemPrompt).not.toContain("pruner");
-		expect(systemPrompt).not.toContain("[coverage:");
 		expect(systemPrompt).not.toContain("Pass strategy");
+	});
+
+	it("renders coverage tiers in every active observation line for the reflector", async () => {
+		const none = observation("aaaaaaaaaaaa", { content: "Uncovered durable fact" });
+		const partial = observation("bbbbbbbbbbbb", { content: "Partially covered fact" });
+		const strong = observation("cccccccccccc", { content: "Strongly covered fact" });
+		let userText = "";
+		const loop = fakeAgentLoop((prompts) => {
+			userText = prompts[0].content[0].text;
+		});
+
+		await runReflector({
+			...baseArgs,
+			observations: [none, partial, strong],
+			reflections: [
+				reflection("rrrrrrrrrrr1", ["bbbbbbbbbbbb", "cccccccccccc"]),
+				reflection("rrrrrrrrrrr2", ["cccccccccccc"]),
+			],
+			agentLoop: loop,
+		});
+
+		expect(userText).toContain("[aaaaaaaaaaaa]");
+		expect(userText).toContain("[coverage: none] Uncovered durable fact");
+		expect(userText).toContain("[coverage: partial] Partially covered fact");
+		expect(userText).toContain("[coverage: strong] Strongly covered fact");
+		expect(userText).not.toContain("drop-priority");
+		expect(userText).not.toContain("drop-resistance");
+	});
+
+	it("renders reflector observation lines with coverage evidence only", () => {
+		const line = observationToReflectorLine(
+			observation("aaaaaaaaaaaa", { relevance: "critical", content: "Important reflected fact" }),
+			"partial",
+		);
+
+		expect(line).toContain("[aaaaaaaaaaaa]");
+		expect(line).toContain("[critical]");
+		expect(line).toContain("[coverage: partial]");
+		expect(line).toContain("Important reflected fact");
+		expect(line).not.toContain("drop-priority");
+		expect(line).not.toContain("drop-resistance");
+	});
+
+	it("summarizes accepted reflection support-id counts without exposing ids", () => {
+		expect(summarizeSupportIdCounts([])).toEqual({
+			reflectionCount: 0,
+			totalSupportIds: 0,
+			minSupportIds: 0,
+			maxSupportIds: 0,
+			averageSupportIds: 0,
+			histogram: {},
+		});
+		expect(summarizeSupportIdCounts([
+			reflection("rrrrrrrrrrr1", ["aaaaaaaaaaaa"]),
+			reflection("rrrrrrrrrrr2", ["aaaaaaaaaaaa", "bbbbbbbbbbbb", "cccccccccccc"]),
+		])).toEqual({
+			reflectionCount: 2,
+			totalSupportIds: 4,
+			minSupportIds: 1,
+			maxSupportIds: 3,
+			averageSupportIds: 2,
+			histogram: { "1": 1, "3": 1 },
+		});
 	});
 
 	it("normalizes supporting observation ids by active observation order", () => {

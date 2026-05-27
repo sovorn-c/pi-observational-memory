@@ -56,7 +56,9 @@ Rendered:
 [a1b2c3d4e5f6] User works at Acme Corp building Acme Dashboard on Next.js 15 with Supabase auth.
 ```
 
-Reflections are written by the reflector into `om.reflections.recorded` ledger entries. They should be fewer and more durable than observations; the reflector should not turn every observation into a reflection.
+Reflections are written by the reflector into `om.reflections.recorded` ledger entries. They should be fewer and more durable than observations; the reflector should not turn every observation into a reflection. The reflector receives each active observation with a deterministic coverage tier (`none`, `partial`, or `strong`) so it can review durable facts that are not yet preserved, but coverage is review context rather than a quota or automatic reflection rule.
+
+A reflection's `supportingObservationIds` are downstream dropper coverage evidence. They should include all and only current observations whose durable meaning the reflection preserves with equivalent fidelity. False or inflated support ids can make later pruning look safer than it is.
 
 ### Drops
 
@@ -76,13 +78,13 @@ It receives raw/source entries only, validates source ids, and appends a non-emp
 
 The reflector runs in the reflect/drop lane from `turn_end` when its raw-token clock reaches `reflectAfterTokens` and the observer is not due.
 
-It reads active observations and current reflections, then appends durable new reflections as `om.reflections.recorded`. Reflections must cite valid supporting observation ids.
+It reads active observations and current reflections, then appends durable new reflections as `om.reflections.recorded`. Reflections must cite valid supporting observation ids. The reflector's coverage annotations describe current support state only; this first coverage-stewardship model does not repair historical coverage on existing reflections that already missed a supporting observation id.
 
 ### Dropper
 
 The dropper runs only as post-reflection maintenance: after the reflector records non-empty same-turn reflections, the dropper may run if the folded active observation ledger is over `observationsPoolTargetTokens`. The dropper can see same-turn new reflections before deciding what to prune.
 
-The dropper can only drop active observation ids. It cannot rewrite or merge observations. Code also protects `critical` observations from being dropped. Its maximum drop count is computed from tokens over target converted to an approximate observation count, and the model may drop fewer or none.
+The dropper can only drop active observation ids. It cannot rewrite or merge observations. Relevance is treated as importance/resistance rather than an absolute lock: `critical` observations are the highest-resistance candidates, but they can be dropped when the model judges that age, reflection coverage, supersession, redundancy, and semantic safety make removal from active memory safe. Its maximum drop count is computed from tokens over target converted to an approximate observation count, and the model may drop fewer or none.
 
 ### Compaction hook
 
@@ -173,12 +175,12 @@ Observation relevance is assigned by the observer:
 
 | Tier | Meaning |
 |---|---|
-| `critical` | User identity, explicit corrections, hard constraints, completed outcomes, or facts that should not be dropped. |
+| `critical` | User identity, explicit corrections, hard constraints, completed outcomes, or facts that require the strongest evidence before leaving active memory. |
 | `high` | Important decisions, non-trivial technical direction, unresolved blockers, key preferences. |
 | `medium` | Useful task-level context and ordinary progress. |
 | `low` | Routine status, tool acknowledgements, or details likely re-derivable from nearby context. |
 
-The dropper uses relevance as part of its judgment, but it is not the only signal. User assertions, exact decisions, unique identifiers, dated events, errors, and rationale should be preserved unless safely represented by durable reflections.
+The dropper uses relevance as part of its judgment, but it is not the only signal and it is not a permanent active-memory pin. User assertions, exact decisions, unique identifiers, dated events, errors, and rationale should be preserved unless safely represented by durable reflections or newer memory. Dropping removes observations from active memory, not from ledger history; recall can still recover dropped observations when their ids are known.
 
 ## V2 compatibility model
 

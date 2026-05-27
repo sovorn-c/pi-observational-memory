@@ -186,10 +186,10 @@ Reflect/drop also runs on `turn_end`, but only when the observer is not due.
 5. Check the reflector raw-token clock against `reflectAfterTokens`.
 6. Resolve the model only for stages that are ready to run.
 7. Fold current ledger state.
-8. If reflector is due and observation coverage exists, run the reflector.
-9. Append non-empty `om.reflections.recorded` with `coversUpToId` set to the latest observation coverage marker.
+8. If reflector is due and observation coverage exists, run the reflector. Each active observation line is annotated with current reflection coverage (`none`, `partial`, or `strong`) so the reflector can review uncovered durable facts without treating coverage as a quota.
+9. Append non-empty `om.reflections.recorded` with `coversUpToId` set to the latest observation coverage marker. Support ids are downstream dropper coverage evidence and should include all and only observations whose durable meaning is preserved with equivalent fidelity.
 10. Only after that same-run non-empty reflection append, check whether the folded active observation pool is over `observationsPoolTargetTokens`.
-11. If over target, run the dropper with same-turn reflections available. It computes a maximum drop count from tokens over target converted to an approximate observation count.
+11. If over target, run the dropper with same-turn reflections available. It computes a maximum drop count from tokens over target converted to an approximate observation count and annotates active observations with reflection coverage tiers (`none`, `partial`, `strong`) for model judgment.
 12. Append non-empty `om.observations.dropped` with `coversUpToId` set to the earlier branch position of latest observation coverage and same-run reflection coverage.
 
 Reflector no-output and reflector failure skip same-turn dropper. Dropper failure does not roll back already-appended reflections.

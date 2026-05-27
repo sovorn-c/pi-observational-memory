@@ -48,7 +48,7 @@ describe("V3 dropper active observation pool metrics", () => {
 		expect(metrics.observationTokens).toBe(150);
 		expect(metrics.tokensOverTarget).toBe(50);
 		expect(metrics.activeObservationCount).toBe(3);
-		expect(metrics.droppableCount).toBe(2);
+		expect(metrics.droppableCount).toBe(3);
 		expect(metrics.maxDropsAllowed).toBe(1);
 		expect(metrics.overTarget).toBe(true);
 		expect(metrics.ready).toBe(true);

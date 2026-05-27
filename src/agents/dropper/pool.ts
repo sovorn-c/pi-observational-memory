@@ -23,7 +23,7 @@ export function observationPoolFullness(observationTokens: number, targetTokens:
 }
 
 export function droppableObservationCount(observations: readonly Observation[]): number {
-	return observations.filter((observation) => observation.relevance !== "critical").length;
+	return observations.length;
 }
 
 export function maxDropCountForPool(observations: readonly Observation[], observationTokens: number, targetTokens: number): number {

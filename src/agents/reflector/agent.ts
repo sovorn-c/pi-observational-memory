@@ -2,12 +2,20 @@ import { agentLoop, type AgentContext, type AgentLoopConfig, type AgentTool } fr
 import type { Message, Model, ModelThinkingLevel } from "@earendil-works/pi-ai";
 import { Type } from "@earendil-works/pi-ai";
 import type { Static } from "typebox";
+import { debugLog } from "../../debug-log.js";
 import { hashId } from "../../ids.js";
 import { AGENT_LOOP_MAX_TOKENS, boundedMaxTokens } from "../../model-budget.js";
 import { truncateRecordContent } from "../../serialize.js";
 import { REFLECTOR_SYSTEM } from "./prompts.js";
 import { estimateStringTokens } from "../../tokens.js";
-import { observationToSummaryLine, reflectionToSummaryLine, type Observation, type Reflection } from "../../session-ledger/index.js";
+import { reflectionToSummaryLine, type Observation, type Reflection } from "../../session-ledger/index.js";
+import {
+	coverageTierForObservation,
+	reflectionCoverageMap,
+	summarizeCoverageByRelevance,
+	summarizeCoverageTransitionsByRelevance,
+	type ReflectionCoverageTier,
+} from "../dropper/coverage.js";
 
 interface RunReflectorArgs {
 	model: Model<any>;
@@ -35,6 +43,38 @@ type RecordReflectionsArgs = Static<typeof RecordReflectionsSchema>;
 
 function joinOrEmpty(items: string[]): string {
 	return items.length ? items.join("\n") : "(none yet)";
+}
+
+export function observationToReflectorLine(
+	observation: Observation,
+	coverage: ReflectionCoverageTier,
+): string {
+	return `[${observation.id}] ${observation.timestamp} [${observation.relevance}] [coverage: ${coverage}] ${observation.content}`;
+}
+
+export function summarizeSupportIdCounts(reflections: readonly Reflection[]): {
+	reflectionCount: number;
+	totalSupportIds: number;
+	minSupportIds: number;
+	maxSupportIds: number;
+	averageSupportIds: number;
+	histogram: Record<string, number>;
+} {
+	if (reflections.length === 0) {
+		return { reflectionCount: 0, totalSupportIds: 0, minSupportIds: 0, maxSupportIds: 0, averageSupportIds: 0, histogram: {} };
+	}
+	const counts = reflections.map((reflection) => reflection.supportingObservationIds.length);
+	const totalSupportIds = counts.reduce((sum, count) => sum + count, 0);
+	const histogram: Record<string, number> = {};
+	for (const count of counts) histogram[String(count)] = (histogram[String(count)] ?? 0) + 1;
+	return {
+		reflectionCount: reflections.length,
+		totalSupportIds,
+		minSupportIds: Math.min(...counts),
+		maxSupportIds: Math.max(...counts),
+		averageSupportIds: totalSupportIds / reflections.length,
+		histogram,
+	};
 }
 
 export function normalizeSupportingObservationIds(
@@ -66,9 +106,21 @@ export async function runReflector(args: RunReflectorArgs): Promise<Reflection[]
 	const { model, apiKey, headers, reflections, observations, signal } = args;
 	if (observations.length === 0) return undefined;
 
+	const coverageById = reflectionCoverageMap(observations, reflections);
+	debugLog("reflector.agent_start", {
+		activeObservationCount: observations.length,
+		reflectionCount: reflections.length,
+		coverageSummaryByRelevance: summarizeCoverageByRelevance(observations, coverageById),
+	});
+
 	const allowedObservationIds = observations.map((observation) => observation.id);
 	const existingReflectionIds = new Set(reflections.map((reflection) => reflection.id));
 	const accumulated = new Map<string, Reflection>();
+	let toolCallCount = 0;
+	let rawProposedReflectionCount = 0;
+	let acceptedReflectionCount = 0;
+	let duplicateReflectionCount = 0;
+	let rejectedReflectionCount = 0;
 
 	const recordReflections: AgentTool<typeof RecordReflectionsSchema> = {
 		name: "record_reflections",
@@ -76,6 +128,8 @@ export async function runReflector(args: RunReflectorArgs): Promise<Reflection[]
 		description: "Record new durable reflections with supporting observation ids.",
 		parameters: RecordReflectionsSchema,
 		execute: async (_id, params: RecordReflectionsArgs) => {
+			toolCallCount++;
+			rawProposedReflectionCount += params.reflections.length;
 			let added = 0;
 			let duplicates = 0;
 			let rejected = 0;
@@ -99,6 +153,9 @@ export async function runReflector(args: RunReflectorArgs): Promise<Reflection[]
 				});
 				added++;
 			}
+			acceptedReflectionCount += added;
+			duplicateReflectionCount += duplicates;
+			rejectedReflectionCount += rejected;
 			return {
 				content: [{ type: "text", text: `Recorded ${added} reflection${added === 1 ? "" : "s"}; ${duplicates} duplicate${duplicates === 1 ? "" : "s"}; ${rejected} rejected. Total this run: ${accumulated.size}.` }],
 				details: { added, duplicates, rejected, total: accumulated.size },
@@ -106,7 +163,7 @@ export async function runReflector(args: RunReflectorArgs): Promise<Reflection[]
 		},
 	};
 
-	const userText = `CURRENT REFLECTIONS:\n${joinOrEmpty(reflections.map(reflectionToSummaryLine))}\n\nCURRENT OBSERVATIONS:\n${joinOrEmpty(observations.map(observationToSummaryLine))}\n\nCrystallize any missing durable facts or patterns into new reflections. If nothing is stable enough, do not call the tool.`;
+	const userText = `CURRENT REFLECTIONS:\n${joinOrEmpty(reflections.map(reflectionToSummaryLine))}\n\nCURRENT OBSERVATIONS:\n${joinOrEmpty(observations.map((observation) => observationToReflectorLine(observation, coverageTierForObservation(observation, coverageById))))}\n\nCrystallize any missing durable facts or patterns into new reflections. If nothing is stable enough, do not call the tool.`;
 	const prompts: Message[] = [{ role: "user", content: [{ type: "text", text: userText }], timestamp: Date.now() }];
 	const context: AgentContext = { systemPrompt: REFLECTOR_SYSTEM, messages: [], tools: [recordReflections as AgentTool<any>] };
 	const reasoning = (model as { reasoning?: unknown }).reasoning;
@@ -130,5 +187,17 @@ export async function runReflector(args: RunReflectorArgs): Promise<Reflection[]
 		// Tool execution collects records.
 	}
 	await stream.result();
-	return accumulated.size > 0 ? Array.from(accumulated.values()) : undefined;
+	const acceptedReflections = Array.from(accumulated.values());
+	const afterCoverageById = reflectionCoverageMap(observations, [...reflections, ...acceptedReflections]);
+	debugLog("reflector.result", {
+		reason: acceptedReflections.length > 0 ? "accepted_nonempty" : toolCallCount === 0 ? "no_tool_call" : "all_filtered",
+		toolCallCount,
+		rawProposedReflectionCount,
+		acceptedReflectionCount,
+		duplicateReflectionCount,
+		rejectedReflectionCount,
+		acceptedSupportIdCounts: summarizeSupportIdCounts(acceptedReflections),
+		coverageTransitionsByRelevance: summarizeCoverageTransitionsByRelevance(observations, coverageById, afterCoverageById),
+	});
+	return acceptedReflections.length > 0 ? acceptedReflections : undefined;
 }
