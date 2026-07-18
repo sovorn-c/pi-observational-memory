@@ -1,8 +1,8 @@
 # @sovorn/pi-observational-memory
 
-- **npm:** https://www.npmjs.com/package/@sovorn/pi-observational-memory
-- **Pi package:** https://pi.dev/packages/@sovorn/pi-observational-memory
-- **License:** MIT
+[![npm version](https://img.shields.io/npm/v/@sovorn/pi-observational-memory?logo=npm)](https://www.npmjs.com/package/@sovorn/pi-observational-memory)
+[![Pi package](https://img.shields.io/badge/Pi%20package-pi.dev-6f42c1)](https://pi.dev/packages/@sovorn/pi-observational-memory)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](./LICENSE)
 
 A Pi extension that keeps long-running conversations coherent across compaction. It records useful observations, distills durable reflections, removes redundant active observations when safe, and feeds bounded memory back into Pi's next context window.
 

@@ -1,15 +1,15 @@
 {
   "name": "@sovorn/pi-observational-memory",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Observational memory for Pi with bounded reflection context during compaction.",
   "type": "module",
   "license": "MIT",
   "author": "sovorn-c",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/elpapi42/pi-observational-memory.git"
+    "url": "git+https://github.com/sovorn-c/pi-observational-memory.git"
   },
-  "homepage": "https://github.com/elpapi42/pi-observational-memory#readme",
+  "homepage": "https://github.com/sovorn-c/pi-observational-memory#readme",
   "keywords": [
     "pi",
     "pi-agent",
