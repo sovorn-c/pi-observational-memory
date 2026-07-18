@@ -1,10 +1,10 @@
 {
-  "name": "pi-observational-memory",
-  "version": "3.0.3",
-  "description": "Observational memory extension for pi — cache-friendly tiered compaction with observations and reflections.",
+  "name": "@sovorn/pi-observational-memory",
+  "version": "0.1.0",
+  "description": "Observational memory for Pi with bounded reflection context during compaction.",
   "type": "module",
   "license": "MIT",
-  "author": "elpapi42",
+  "author": "sovorn-c",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/elpapi42/pi-observational-memory.git"

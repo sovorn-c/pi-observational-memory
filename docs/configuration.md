@@ -31,6 +31,7 @@ The extension loads config once for its runtime. After changing settings, restar
   "observational-memory": {
     "observeAfterTokens": 10000,
     "reflectAfterTokens": 20000,
+    "reflectionContextMaxTokens": 10000,
     "compactAfterTokens": 81000,
     "observationsPoolMaxTokens": 20000,
     "observationsPoolTargetTokens": 10000,
@@ -54,6 +55,7 @@ You can omit everything. Defaults work for ordinary sessions, and if `model` is 
 |---|---:|---:|---|
 | `observeAfterTokens` | positive integer | `10000` | Raw/source token threshold for observer runs. |
 | `reflectAfterTokens` | positive integer | `20000` | Raw/source token threshold for reflector runs; successful reflection creates dropper maintenance opportunities. |
+| `reflectionContextMaxTokens` | positive integer | `10000` | Maximum reflection context rendered during compaction; internally split 40% digest and 60% recent reflections. The full reflection ledger remains intact. |
 | `compactAfterTokens` | positive integer | `81000` | Raw/source token threshold for proactive auto-compaction. |
 | `observationsPoolMaxTokens` | positive integer | `20000` | Normal compaction-projection observation-token pressure that makes compaction do a full fold. |
 | `observationsPoolTargetTokens` | positive integer below max | half of `observationsPoolMaxTokens` | Folded active observation target used by post-reflection dropper maintenance. |
@@ -87,13 +89,21 @@ The dropper no longer uses `reflectAfterTokens` as its own launch threshold. Dro
 
 Lower values distill reflections more often and therefore create more opportunities for post-reflection dropper maintenance. Higher values reduce reflector model calls but leave more observations between reflection and dropper opportunities.
 
+## `reflectionContextMaxTokens`
+
+Default: `10000`.
+
+This bounds the reflection portion of the compaction summary without deleting reflections from the V3 ledger. The extension reserves 40% of the budget for a digest of older reflections and 60% for the newest reflections kept verbatim. Once a digest exists, its coverage watermark advances only when new reflections overflow the recent window; unchanged compactions reuse the existing digest.
+
+The digest is persisted in V3 compaction details and is not recorded as a normal reflection, so it does not affect reflector coverage or dropper provenance. If no model is available during an overflow compaction, the extension uses a bounded deterministic fallback rather than allowing the summary to grow without limit.
+
 ## `compactAfterTokens`
 
 Default: `81000`.
 
 The auto-compaction trigger runs from Pi's `agent_end` hook. It counts raw/source tokens after the latest compaction boundary. If the count reaches `compactAfterTokens`, the extension defers with `setTimeout(0)`, checks that Pi is idle, re-checks the threshold, and calls `ctx.compact()`.
 
-This trigger does not wait for observer, reflector, or dropper work. Actual compaction summary creation happens later in `session_before_compact`, where V3 compaction is deterministic and model-free.
+This trigger does not wait for observer, reflector, or dropper work. Actual compaction summary creation happens later in `session_before_compact`; reflection-digest maintenance may use the configured memory model only when the reflection context overflows its budget, with a bounded deterministic fallback if no model is available.
 
 Pi's own window-pressure compaction and manual compaction can still happen independently of this proactive trigger.
 

@@ -33,6 +33,7 @@ export type CompactAfterTokensMode = "calibrated" | "ratio";
 export interface Config {
 	observeAfterTokens: number;
 	reflectAfterTokens: number;
+	reflectionContextMaxTokens: number;
 	compactAfterTokens: number;
 	compactAfterTokensMode: CompactAfterTokensMode;
 	compactAfterTokensRatio: number;
@@ -47,6 +48,7 @@ export interface Config {
 export const DEFAULTS: Config = {
 	observeAfterTokens: 10_000,
 	reflectAfterTokens: 20_000,
+	reflectionContextMaxTokens: 10_000,
 	compactAfterTokens: 81_000,
 	compactAfterTokensMode: "calibrated",
 	compactAfterTokensRatio: 0.68,
@@ -134,6 +136,7 @@ function normalizeSettingsConfig(value: Record<string, unknown>): Partial<Config
 	const numberKeys = [
 		"observeAfterTokens",
 		"reflectAfterTokens",
+		"reflectionContextMaxTokens",
 		"compactAfterTokens",
 		"observationsPoolMaxTokens",
 		"observationsPoolTargetTokens",

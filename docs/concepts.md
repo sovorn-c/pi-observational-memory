@@ -88,14 +88,14 @@ The dropper can only drop active observation ids. It cannot rewrite or merge obs
 
 ### Compaction hook
 
-The compaction hook runs during `session_before_compact`. In V3 it is deterministic and model-free:
+The compaction hook runs during `session_before_compact`:
 
 - it does not run observer, reflector, or dropper;
-- it does not call a model;
-- it does not wait for background memory workers;
-- it folds/projects ledger state and renders the summary.
+- it folds/projects ledger state and renders the summary;
+- it normally remains model-free, but may call the configured memory model only when the bounded reflection context needs a new digest;
+- digest maintenance is persisted in compaction details and falls back to bounded deterministic text if no model is available.
 
-This is the main reason V3 compactions should feel instantaneous compared with V2.
+Observation projection remains unchanged. Reflection context is split internally into a digest of older reflections and a recent suffix, controlled by `reflectionContextMaxTokens`; the full reflection ledger is retained.
 
 ## Ledger entries
 
@@ -127,6 +127,7 @@ type MemoryDetails = {
   fullFold: boolean;
   observations: Observation[];
   reflections: Reflection[];
+  reflectionDigest?: ReflectionDigest;
 }
 ```
 

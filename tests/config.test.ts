@@ -38,6 +38,7 @@ describe("V3 config", () => {
 		expect(DEFAULTS).toEqual({
 			observeAfterTokens: 10000,
 			reflectAfterTokens: 20000,
+			reflectionContextMaxTokens: 10000,
 			compactAfterTokens: 81000,
 			compactAfterTokensMode: "calibrated",
 			compactAfterTokensRatio: 0.68,
@@ -55,6 +56,7 @@ describe("V3 config", () => {
 			"observational-memory": {
 				observeAfterTokens: 10,
 				reflectAfterTokens: 20,
+				reflectionContextMaxTokens: 25,
 				compactAfterTokens: 30,
 				observationsPoolMaxTokens: 40,
 				observationsPoolTargetTokens: 15,
@@ -74,6 +76,7 @@ describe("V3 config", () => {
 		expect(loadConfig(cwd, { PI_OBSERVATIONAL_MEMORY_PASSIVE: "true" })).toMatchObject({
 			observeAfterTokens: 100,
 			reflectAfterTokens: 20,
+			reflectionContextMaxTokens: 25,
 			compactAfterTokens: 30,
 			observationsPoolMaxTokens: 40,
 			observationsPoolTargetTokens: 15,

@@ -38,6 +38,13 @@ export type Reflection = {
 	tokenCount: number;
 };
 
+/** A bounded context representation of older reflections. */
+export type ReflectionDigest = {
+	content: string;
+	coversThroughReflectionId: string;
+	tokenCount: number;
+};
+
 export type ObservationsRecordedEntryData = {
 	observations: Observation[];
 	coversUpToId: string;
@@ -59,6 +66,7 @@ export type MemoryDetails = {
 	fullFold: boolean;
 	observations: Observation[];
 	reflections: Reflection[];
+	reflectionDigest?: ReflectionDigest;
 };
 
 export type V3MemoryCustomType =
@@ -84,6 +92,15 @@ export function isMemoryId(value: unknown): value is string {
 
 function isTokenCount(value: unknown): value is number {
 	return typeof value === "number" && Number.isFinite(value) && value >= 0;
+}
+
+function isReflectionDigest(value: unknown): value is ReflectionDigest {
+	if (!isPlainRecord(value)) return false;
+	return (
+		isNonEmptyString(value.content) &&
+		isMemoryId(value.coversThroughReflectionId) &&
+		isTokenCount(value.tokenCount)
+	);
 }
 
 function isPlainRecord(value: unknown): value is Record<string, unknown> {
@@ -147,7 +164,8 @@ export function isMemoryDetails(value: unknown): value is MemoryDetails {
 		Array.isArray(value.observations) &&
 		value.observations.every(isObservation) &&
 		Array.isArray(value.reflections) &&
-		value.reflections.every(isReflection)
+		value.reflections.every(isReflection) &&
+		(value.reflectionDigest === undefined || isReflectionDigest(value.reflectionDigest))
 	);
 }
 

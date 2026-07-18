@@ -27,6 +27,7 @@ export type CompactionProjectionConfig = {
 
 export type CompactionProjection = Projection & {
 	fullFold: boolean;
+	reflectionDigest?: MemoryDetails["reflectionDigest"];
 	details: MemoryDetails;
 };
 
@@ -122,10 +123,11 @@ function foldProjection(entries: Entry[], options: ProjectionFoldOptions): Proje
 	};
 }
 
-function projectionFromMemoryDetails(details: MemoryDetails): Projection {
+function projectionFromMemoryDetails(details: MemoryDetails): Projection & Pick<CompactionProjection, "reflectionDigest"> {
 	return {
 		observations: [...details.observations],
 		reflections: [...details.reflections],
+		reflectionDigest: details.reflectionDigest,
 	};
 }
 
@@ -191,18 +193,21 @@ export function buildCompactionProjection(
 		? fullProjection(entries, firstKeptEntryId)
 		: normalProjection;
 
+	const previousDigest = latestV3CompactionDetails(entries)?.reflectionDigest;
 	const details: MemoryDetails = {
 		type: OM_FOLDED,
 		version: 1,
 		fullFold,
 		observations: projection.observations,
 		reflections: projection.reflections,
+		...(previousDigest ? { reflectionDigest: previousDigest } : {}),
 	};
 
 	return {
 		fullFold,
 		observations: projection.observations,
 		reflections: projection.reflections,
+		reflectionDigest: previousDigest,
 		details,
 	};
 }

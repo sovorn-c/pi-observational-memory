@@ -15,7 +15,7 @@ import {
 	type TestEntry,
 } from "./fixtures/session.js";
 
-function setup(args: { entries: TestEntry[]; observationsPoolMaxTokens?: number; compactHookInFlight?: boolean }) {
+function setup(args: { entries: TestEntry[]; observationsPoolMaxTokens?: number; reflectionContextMaxTokens?: number; compactHookInFlight?: boolean }) {
 	let handler: ((event: unknown, ctx: unknown) => Promise<unknown>) | undefined;
 	const pi = {
 		on: vi.fn((eventName: string, cb: typeof handler) => {
@@ -27,6 +27,7 @@ function setup(args: { entries: TestEntry[]; observationsPoolMaxTokens?: number;
 	const runtime = {
 		config: {
 			observationsPoolMaxTokens: args.observationsPoolMaxTokens ?? 20_000,
+			reflectionContextMaxTokens: args.reflectionContextMaxTokens ?? 10_000,
 		},
 		compactHookInFlight: args.compactHookInFlight ?? false,
 		observerPromise: new Promise(() => {}),
@@ -144,6 +145,31 @@ describe("V3 compaction hook", () => {
 		expect(result.compaction.details.fullFold).toBe(true);
 		expect(result.compaction.details.observations.map((obs: any) => obs.id)).toEqual(["bbbbbbbbbbbb"]);
 		expect(result.compaction.details.reflections.map((ref: any) => ref.id)).toEqual(["eeeeeeeeeeee", "ffffffffffff"]);
+	});
+
+	it("keeps reflection context bounded and persists the digest watermark", async () => {
+		const reflections = [
+			reflection("aaaaaaaaaaaa", ["111111111111"], { tokenCount: 4 }),
+			reflection("bbbbbbbbbbbb", ["111111111111"], { tokenCount: 4 }),
+			reflection("cccccccccccc", ["111111111111"], { tokenCount: 4 }),
+			reflection("dddddddddddd", ["111111111111"], { tokenCount: 4 }),
+		];
+		const obs = observation("111111111111", { tokenCount: 2, sourceEntryIds: ["raw-1"] });
+		const entries = [
+			textCustomMessage("raw-1", "aaaa"),
+			observationsRecordedEntry("om-observations", { observations: [obs], coversUpToId: "raw-1" }),
+			reflectionsRecordedEntry("om-reflections", { reflections, coversUpToId: "raw-1" }),
+		];
+		const { run } = setup({ entries, observationsPoolMaxTokens: 1, reflectionContextMaxTokens: 10 });
+
+		const result = await run("raw-1") as any;
+
+		expect(result.compaction.summary).toContain("## Reflection digest");
+		expect(result.compaction.summary).toContain("[dddddddddddd]");
+		expect(result.compaction.summary).not.toContain("[aaaaaaaaaaaa]");
+		expect(result.compaction.details.reflectionDigest).toMatchObject({
+		coversThroughReflectionId: "cccccccccccc",
+	});
 	});
 
 	it("ignores old V2 memory entries and details", async () => {

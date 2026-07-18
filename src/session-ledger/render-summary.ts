@@ -1,4 +1,4 @@
-import type { Observation, Reflection } from "./types.js";
+import type { Observation, Reflection, ReflectionDigest } from "./types.js";
 
 const CONTEXT_USAGE_INSTRUCTIONS = `These are condensed memories from earlier in this session.
 
@@ -17,12 +17,25 @@ export function reflectionToSummaryLine(reflection: Reflection): string {
 	return `[${reflection.id}] ${reflection.content}`;
 }
 
-export function renderSummary(reflections: Reflection[], observations: Observation[]): string {
-	if (reflections.length === 0 && observations.length === 0) return "";
+export type SummaryReflectionContext = {
+	digest?: ReflectionDigest;
+	recent: Reflection[];
+};
+
+export function renderSummary(
+	reflections: Reflection[],
+	observations: Observation[],
+	reflectionContext?: SummaryReflectionContext,
+): string {
+	const visibleReflections = reflectionContext?.recent ?? reflections;
+	if (visibleReflections.length === 0 && observations.length === 0 && !reflectionContext?.digest) return "";
 
 	const parts: string[] = [CONTEXT_USAGE_INSTRUCTIONS];
-	if (reflections.length > 0) {
-		parts.push(`## Reflections\n${reflections.map(reflectionToSummaryLine).join("\n")}`);
+	if (reflectionContext?.digest) {
+		parts.push(`## Reflection digest\n${reflectionContext.digest.content}`);
+	}
+	if (visibleReflections.length > 0) {
+		parts.push(`## Reflections\n${visibleReflections.map(reflectionToSummaryLine).join("\n")}`);
 	}
 	if (observations.length > 0) {
 		parts.push(`## Observations\n${observations.map(observationToSummaryLine).join("\n")}`);
