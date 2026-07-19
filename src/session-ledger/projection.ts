@@ -140,6 +140,10 @@ function latestV3CompactionDetails(entries: Entry[]): MemoryDetails | undefined 
 	return undefined;
 }
 
+export function latestReflectionDigest(entries: Entry[]): MemoryDetails["reflectionDigest"] {
+	return latestV3CompactionDetails(entries)?.reflectionDigest;
+}
+
 export function fullProjection(entries: Entry[], upToEntryId?: string): Projection {
 	const boundary = upToEntryId ? entryBoundary(upToEntryId) : tipBoundary();
 	return foldProjection(entries, {

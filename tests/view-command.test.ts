@@ -60,6 +60,9 @@ describe("V3 /om:view", () => {
 	it("renders no-memory visible output as content-only sections and copies it", async () => {
 		const { output, clipboardText, copyToClipboard } = await setup([]).run();
 		const expected = [
+			"── Reflection digest ──",
+			"No reflection digest generated.",
+			"",
 			"── Reflections ──",
 			"No visible reflections.",
 			"",
@@ -97,6 +100,29 @@ describe("V3 /om:view", () => {
 		expectNoDiagnostics(output);
 	});
 
+	it("renders the persisted reflection digest alongside visible memory", async () => {
+		const ref = reflection("eeeeeeeeeeee", ["aaaaaaaaaaaa"]);
+		const entries = [
+			textCustomMessage("raw-1", "aaaa"),
+			compactionEntry("cmp", {
+				firstKeptEntryId: "raw-1",
+				details: memoryDetails({
+					reflections: [ref],
+					reflectionDigest: {
+						content: "Durable preference: preserve concise responses.",
+						coversThroughReflectionId: "dddddddddddd",
+						tokenCount: 7,
+					},
+				}),
+			}),
+		];
+
+		const { clipboardText } = await setup(entries).run();
+		expect(clipboardText).toContain("── Reflection digest ──");
+		expect(clipboardText).toContain("Covers through: [dddddddddddd] (~7 tokens)");
+		expect(clipboardText).toContain("Durable preference: preserve concise responses.");
+	});
+
 	it("full view folds recorded V3 memory, excludes dropped observations, and copies clean output", async () => {
 		const obsA = observation("aaaaaaaaaaaa", { content: "Dropped observation content" });
 		const obsB = observation("bbbbbbbbbbbb", { content: "Kept observation content" });
@@ -129,6 +155,9 @@ describe("V3 /om:view", () => {
 	it("full view renders recorded empty states and copies them", async () => {
 		const { output, clipboardText } = await setup([]).run(["full"]);
 		const expected = [
+			"── Reflection digest ──",
+			"No reflection digest generated.",
+			"",
 			"── Reflections ──",
 			"No recorded reflections.",
 			"",
@@ -144,6 +173,9 @@ describe("V3 /om:view", () => {
 	it("keeps rendering the memory view when clipboard copy fails", async () => {
 		const { output, clipboardText, copyToClipboard } = await setup([], false).run();
 		const expected = [
+			"── Reflection digest ──",
+			"No reflection digest generated.",
+			"",
 			"── Reflections ──",
 			"No visible reflections.",
 			"",

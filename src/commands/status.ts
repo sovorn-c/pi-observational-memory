@@ -2,10 +2,12 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { observationPoolMetrics } from "../agents/dropper/pool.js";
 import { resolveCompactAfterTokens } from "../config.js";
 import type { Runtime } from "../runtime.js";
+import { reflectionContextBudget, selectRecentReflections } from "../reflection-context.js";
 import {
 	diffProjection,
 	foldLedger,
 	fullProjection,
+	latestReflectionDigest,
 	rawTokensSinceLastCompaction,
 	rawTokensSinceObservationCoverage,
 	rawTokensSinceReflectionCoverage,
@@ -47,6 +49,12 @@ export function registerStatusCommand(pi: ExtensionAPI, runtime: Runtime): void 
 
 			const visibleObservationTokens = tokenSum(visible.observations);
 			const visibleReflectionTokens = tokenSum(visible.reflections);
+			const reflectionContextMaxTokens = runtime.config.reflectionContextMaxTokens ?? 10000;
+			const reflectionBudget = reflectionContextBudget(reflectionContextMaxTokens);
+			const recentReflectionContext = selectRecentReflections(visible.reflections, reflectionBudget.recentTokens);
+			const reflectionDigest = latestReflectionDigest(entries);
+			const recentReflectionTokens = tokenSum(recentReflectionContext.recent);
+			const reflectionContextTokens = recentReflectionTokens + (reflectionDigest?.tokenCount ?? 0);
 			const activeObservationPool = observationPoolMetrics(folded.activeObservations, runtime.config.observationsPoolTargetTokens);
 			const observationLine = appendSuffixes(
 				`Observations: ${folded.observations.length} recorded / ${folded.droppedObservationIds.size} dropped / ${folded.activeObservations.length} active / ${visible.observations.length} visible`,
@@ -85,7 +93,9 @@ export function registerStatusCommand(pi: ExtensionAPI, runtime: Runtime): void 
 				`Next compaction:  ~${compactionProgress.toLocaleString()} / ${compactThreshold.toLocaleString()} tokens (${pct(compactionProgress, compactThreshold)}%)`,
 				`Visible observation pool: ~${visibleObservationTokens.toLocaleString()} / ${runtime.config.observationsPoolMaxTokens.toLocaleString()} tokens (${pct(visibleObservationTokens, runtime.config.observationsPoolMaxTokens)}%)`,
 				`Active observation pool: ~${activeObservationPool.observationTokens.toLocaleString()} / ${runtime.config.observationsPoolTargetTokens.toLocaleString()} target tokens (${pct(activeObservationPool.observationTokens, runtime.config.observationsPoolTargetTokens)}%)`,
-				`Reflection pool:         ~${visibleReflectionTokens.toLocaleString()} tokens`,
+				`Reflection ledger:        ~${visibleReflectionTokens.toLocaleString()} tokens`,
+				`Reflection context:       ~${reflectionContextTokens.toLocaleString()} / ${reflectionBudget.totalTokens.toLocaleString()} tokens (${pct(reflectionContextTokens, reflectionBudget.totalTokens)}%)`,
+				`Reflection digest:        ${reflectionDigest ? `~${reflectionDigest.tokenCount.toLocaleString()} tokens, through [${reflectionDigest.coversThroughReflectionId}]` : "not generated"}`,
 			];
 
 			if (runtime.consolidationInFlight || runtime.compactInFlight || runtime.compactHookInFlight) {

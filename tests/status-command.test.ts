@@ -116,7 +116,9 @@ describe("V3 /om:status", () => {
 		expect(output).toContain("/ 30 tokens");
 		expect(output).toContain("Visible observation pool: ~5 / 40 tokens (13%)");
 		expect(output).toContain("Active observation pool: ~5 / 20 target tokens (25%)");
-		expect(output).toContain("Reflection pool:         ~3 tokens");
+		expect(output).toContain("Reflection ledger:        ~3 tokens");
+		expect(output).toContain("Reflection context:       ~3 / 10,000 tokens (0%)");
+		expect(output).toContain("Reflection digest:        not generated");
 		expect(output).not.toContain("Observation pool:");
 		expect(output).not.toContain("Full fold pool:");
 		expect(output).not.toContain("visible observation tokens");

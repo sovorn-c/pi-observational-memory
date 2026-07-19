@@ -3,11 +3,13 @@ import type { Runtime } from "../runtime.js";
 import { copyTextToClipboard } from "../clipboard.js";
 import {
 	fullProjection,
+	latestReflectionDigest,
 	observationToSummaryLine,
 	reflectionToSummaryLine,
 	visibleProjection,
 	type Entry,
 	type Projection,
+	type ReflectionDigest,
 } from "../session-ledger/index.js";
 
 function firstArg(args: unknown): string | undefined {
@@ -24,8 +26,21 @@ function renderList<T>(items: T[], render: (item: T) => string, empty: string): 
 	return items.length > 0 ? items.map(render).join("\n") : empty;
 }
 
-function renderContentOnlyProjection(projection: Projection, emptyScope: "visible" | "recorded"): string {
+function renderContentOnlyProjection(
+	projection: Projection,
+	emptyScope: "visible" | "recorded",
+	digest: ReflectionDigest | undefined,
+): string {
+	const digestSection = digest
+		? [
+			"── Reflection digest ──",
+			`Covers through: [${digest.coversThroughReflectionId}] (~${digest.tokenCount.toLocaleString()} tokens)`,
+			digest.content,
+		]
+		: ["── Reflection digest ──", "No reflection digest generated."];
 	return [
+		...digestSection,
+		"",
 		"── Reflections ──",
 		renderList(projection.reflections, reflectionToSummaryLine, `No ${emptyScope} reflections.`),
 		"",
@@ -58,8 +73,10 @@ export function registerViewCommand(pi: ExtensionAPI, runtime: Runtime, options:
 				);
 			};
 
+			const reflectionDigest = latestReflectionDigest(entries);
+
 			if (mode === "full") {
-				await notifyWithCopy(renderContentOnlyProjection(fullProjection(entries), "recorded"));
+				await notifyWithCopy(renderContentOnlyProjection(fullProjection(entries), "recorded", reflectionDigest));
 				return;
 			}
 
@@ -68,7 +85,7 @@ export function registerViewCommand(pi: ExtensionAPI, runtime: Runtime, options:
 				return;
 			}
 
-			await notifyWithCopy(renderContentOnlyProjection(visibleProjection(entries), "visible"));
+			await notifyWithCopy(renderContentOnlyProjection(visibleProjection(entries), "visible", reflectionDigest));
 		},
 	});
 }
