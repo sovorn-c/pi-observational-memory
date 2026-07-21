@@ -10,6 +10,7 @@ import {
 	oldV2CompactionDetails,
 	oldV2ObservationEntry,
 	reflection,
+	reflectionDigestRecordedEntry,
 	reflectionsRecordedEntry,
 	textCustomMessage,
 	type TestEntry,
@@ -39,6 +40,7 @@ function setup(args: { entries: TestEntry[]; runtime?: Partial<any>; model?: unk
 		compactHookInFlight: false,
 		lastObserverError: undefined,
 		lastReflectorError: undefined,
+		lastReflectionDigestError: undefined,
 		lastDropperError: undefined,
 		...args.runtime,
 	};
@@ -124,6 +126,27 @@ describe("V3 /om:status", () => {
 		expect(output).not.toContain("visible observation tokens");
 	});
 
+	it("reports a branch-local digest against visible reflections", async () => {
+		const ref1 = reflection("dddddddddddd", ["aaaaaaaaaaaa"], { tokenCount: 3 });
+		const ref2 = reflection("eeeeeeeeeeee", ["aaaaaaaaaaaa"], { tokenCount: 5 });
+		const digest = {
+			content: "Durable digest.",
+			coversThroughReflectionId: ref1.id,
+			tokenCount: 7,
+		};
+		const entries = [
+			textCustomMessage("raw-1", "aaaaaaaa"),
+			reflectionsRecordedEntry("om-reflections", { reflections: [ref1, ref2], coversUpToId: "raw-1" }),
+			reflectionDigestRecordedEntry("om-digest", digest),
+			compactionEntry("cmp", { firstKeptEntryId: "raw-1", details: memoryDetails({ reflections: [ref1, ref2] }) }),
+		];
+
+		const output = await setup({ entries }).run();
+
+		expect(output).toContain("Reflection context:       ~12 / 10,000 tokens");
+		expect(output).toContain("Reflection digest:        ~7 tokens, through [dddddddddddd]");
+	});
+
 	it("shows over-target active observation pool in the Activity section", async () => {
 		const obs = observation("aaaaaaaaaaaa", { tokenCount: 25 });
 		const entries = [
@@ -147,6 +170,7 @@ describe("V3 /om:status", () => {
 				compactHookInFlight: true,
 				lastObserverError: "observer failed",
 				lastReflectorError: "reflect failed",
+				lastReflectionDigestError: "digest failed",
 				lastDropperError: "drop failed",
 			},
 		}).run();
@@ -159,6 +183,7 @@ describe("V3 /om:status", () => {
 		expect(output).toContain("Compaction hook: running");
 		expect(output).toContain("Observer: observer failed");
 		expect(output).toContain("Reflector: reflect failed");
+		expect(output).toContain("Reflection digest: digest failed");
 		expect(output).toContain("Dropper: drop failed");
 	});
 

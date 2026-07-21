@@ -80,6 +80,12 @@ The reflector runs in the reflect/drop lane from `turn_end` when its raw-token c
 
 It reads active observations and current reflections, then appends durable new reflections as `om.reflections.recorded`. Reflections must cite valid supporting observation ids. The reflector's coverage annotations describe current support state only; this first coverage-stewardship model does not repair historical coverage on existing reflections that already missed a supporting observation id.
 
+### Reflection-context maintainer
+
+After the reflector records a non-empty batch and the same-turn dropper opportunity is handled, background reflection-context maintenance checks uncovered reflection tokens against the high-water allocation derived from `reflectionContextMaxTokens`. If pressure exceeds that allocation, it uses the configured memory model and thinking level to append a branch-local `om.reflection_digest.recorded` checkpoint. It leaves a recent suffix below the high-water mark so later reflection batches have headroom.
+
+A failed digest update appends nothing and advances no watermark. The original reflection ledger remains the source of truth.
+
 ### Dropper
 
 The dropper runs only as post-reflection maintenance: after the reflector records non-empty same-turn reflections, the dropper may run if the folded active observation ledger is over `observationsPoolTargetTokens`. The dropper can see same-turn new reflections before deciding what to prune.
@@ -90,16 +96,18 @@ The dropper can only drop active observation ids. It cannot rewrite or merge obs
 
 The compaction hook runs during `session_before_compact`:
 
-- it does not run observer, reflector, or dropper;
+- it does not run observer, reflector, reflection-digest maintenance, or dropper;
 - it folds/projects ledger state and renders the summary;
-- it normally remains model-free, but may call the configured memory model only when the bounded reflection context needs a new digest;
-- digest maintenance is persisted in compaction details and falls back to bounded deterministic text if no model is available.
+- it reads the latest valid branch-local digest checkpoint and appends uncovered reflections;
+- it never calls a model or waits for background maintenance.
+
+If digest maintenance is late or failed, compaction renders the uncovered reflections directly. This may temporarily exceed `reflectionContextMaxTokens`, but it avoids both blocking compaction and silently dropping durable context.
 
 Observation projection remains unchanged. Reflection context is split internally into a digest of older reflections and a recent suffix, controlled by `reflectionContextMaxTokens`; the full reflection ledger is retained.
 
 ## Ledger entries
 
-V3 uses three custom memory ledger entry types:
+V3 uses four custom memory ledger entry types:
 
 ```ts
 om.observations.recorded: {
@@ -110,6 +118,12 @@ om.observations.recorded: {
 om.reflections.recorded: {
   reflections: Reflection[];
   coversUpToId: string;
+}
+
+om.reflection_digest.recorded: {
+  content: string;
+  coversThroughReflectionId: string;
+  tokenCount: number;
 }
 
 om.observations.dropped: {
@@ -127,9 +141,10 @@ type MemoryDetails = {
   fullFold: boolean;
   observations: Observation[];
   reflections: Reflection[];
-  reflectionDigest?: ReflectionDigest;
 }
 ```
+
+Readers continue to accept `reflectionDigest` in older V3 compaction details, but new compactions use the branch-local checkpoint entry instead.
 
 Old V2 memory entry/details formats are ignored.
 

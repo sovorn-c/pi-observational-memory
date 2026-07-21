@@ -142,6 +142,19 @@ data: {
 
 Drops are tombstones. They remove ids from active observations but do not delete ledger history.
 
+### Reflection digest recorded
+
+```ts
+customType: "om.reflection_digest.recorded"
+data: {
+  content: string;
+  coversThroughReflectionId: string;
+  tokenCount: number;
+}
+```
+
+This is a derived, branch-local checkpoint for bounded reflection context. It does not replace or delete reflection records.
+
 ### Folded compaction details
 
 ```ts
@@ -175,9 +188,9 @@ The observer trigger runs on `turn_end`.
 
 If no observations are generated, the worker writes no entry and does not advance coverage. A later eligible observer run will see a larger range.
 
-## Reflect/drop flow
+## Reflect/drop/digest flow
 
-Reflect/drop also runs on `turn_end`, but only when the observer is not due.
+Reflection maintenance also runs on `turn_end`, but only when the observer is not due.
 
 1. Load config if needed.
 2. Skip if `passive` is true.
@@ -188,11 +201,13 @@ Reflect/drop also runs on `turn_end`, but only when the observer is not due.
 7. Fold current ledger state.
 8. If reflector is due and observation coverage exists, run the reflector. Each active observation line is annotated with current reflection coverage (`none`, `partial`, or `strong`) so the reflector can review uncovered durable facts without treating coverage as a quota.
 9. Append non-empty `om.reflections.recorded` with `coversUpToId` set to the latest observation coverage marker. Support ids are downstream dropper coverage evidence and should include all and only observations whose durable meaning is preserved with equivalent fidelity.
-10. Only after that same-run non-empty reflection append, check whether the folded active observation pool is over `observationsPoolTargetTokens`.
+10. Check whether the folded active observation pool is over `observationsPoolTargetTokens`.
 11. If over target, run the dropper with same-turn reflections available. It computes a maximum drop count from tokens over target converted to an approximate observation count and annotates active observations with reflection coverage tiers (`none`, `partial`, `strong`) for model judgment.
 12. Append non-empty `om.observations.dropped` with `coversUpToId` set to the earlier branch position of latest observation coverage and same-run reflection coverage.
+13. Check uncovered reflection tokens against the 60% high-water allocation derived from `reflectionContextMaxTokens`.
+14. If pressure exceeds the high-water limit, retain a newest suffix targeting 40% of the total budget, run the reflection-digest agent on the older prefix plus any previous digest, and append `om.reflection_digest.recorded`. This leaves 20% headroom for later reflection batches.
 
-Reflector no-output and reflector failure skip same-turn dropper. Dropper failure does not roll back already-appended reflections.
+Reflector no-output and reflector failure skip same-turn dropper/digest work. Dropper failure does not prevent digest maintenance. Digest failure appends no checkpoint and advances no watermark.
 
 ## Auto-compaction trigger
 
@@ -209,7 +224,7 @@ It skips when:
 
 When all checks pass, it calls `ctx.compact()`.
 
-This trigger does not wait for observer, reflector, or dropper promises. That is intentional: background memory work should never make compaction feel stuck.
+This trigger does not wait for observer, reflector, reflection-digest, or dropper promises. That is intentional: background memory work should never make compaction feel stuck.
 
 ## Compaction hook
 
@@ -221,8 +236,9 @@ It does only deterministic work:
 2. Load config if needed.
 3. Read `event.preparation.firstKeptEntryId` and `event.preparation.tokensBefore`.
 4. Build a compaction projection from branch entries and `firstKeptEntryId`.
-5. Render a summary from projected reflections and observations.
-6. Return `{ compaction: { summary, firstKeptEntryId, tokensBefore, details } }` where `details.type` is `om.folded`.
+5. Select the latest valid branch-local reflection digest for that exact projection.
+6. Render the digest, all uncovered reflections after its watermark, and projected observations. If no valid checkpoint exists, render all projected reflections.
+7. Return `{ compaction: { summary, firstKeptEntryId, tokensBefore, details } }` where `details.type` is `om.folded`.
 
 It does not:
 

@@ -8,6 +8,7 @@ import {
 	observationsRecordedEntry,
 	oldV2ObservationEntry,
 	reflection,
+	reflectionDigestRecordedEntry,
 	reflectionsRecordedEntry,
 	textCustomMessage,
 } from "./fixtures/session.js";
@@ -69,6 +70,41 @@ describe("session-ledger V3 folding", () => {
 		expect(folded.reflectionsById.get("eeeeeeeeeeee")?.content).toBe("first reflection");
 		expect(folded.observations).toHaveLength(1);
 		expect(folded.reflections).toHaveLength(1);
+	});
+
+	it("folds the latest valid branch-local digest checkpoint through the target entry", () => {
+		const ref1 = reflection("eeeeeeeeeeee", ["aaaaaaaaaaaa"]);
+		const ref2 = reflection("ffffffffffff", ["aaaaaaaaaaaa"]);
+		const entries = [
+			textCustomMessage("raw-1", "aaaa"),
+			reflectionsRecordedEntry("om-reflections", { reflections: [ref1, ref2], coversUpToId: "raw-1" }),
+			reflectionDigestRecordedEntry("om-digest-1", {
+				content: "First digest.",
+				coversThroughReflectionId: ref1.id,
+				tokenCount: 3,
+			}),
+			reflectionDigestRecordedEntry("om-digest-2", {
+				content: "Second digest.",
+				coversThroughReflectionId: ref2.id,
+				tokenCount: 3,
+			}),
+		];
+
+		expect(foldLedger(entries, { upToEntryId: "om-digest-1" }).reflectionDigest?.content).toBe("First digest.");
+		expect(foldLedger(entries).reflectionDigest?.content).toBe("Second digest.");
+	});
+
+	it("ignores dangling reflection digest checkpoints", () => {
+		const entries = [
+			textCustomMessage("raw-1", "aaaa"),
+			reflectionDigestRecordedEntry("om-digest", {
+				content: "Dangling digest.",
+				coversThroughReflectionId: "eeeeeeeeeeee",
+				tokenCount: 3,
+			}),
+		];
+
+		expect(foldLedger(entries).reflectionDigest).toBeUndefined();
 	});
 
 	it("retains tombstones for unknown drop ids without throwing", () => {

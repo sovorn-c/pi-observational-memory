@@ -3,6 +3,7 @@ import {
 	isMemoryDetails,
 	isObservationsDroppedEntry,
 	isObservationsRecordedEntry,
+	isReflectionDigestRecordedEntry,
 	isReflectionsRecordedEntry,
 	type Entry,
 	type MemoryDetails,
@@ -123,11 +124,10 @@ function foldProjection(entries: Entry[], options: ProjectionFoldOptions): Proje
 	};
 }
 
-function projectionFromMemoryDetails(details: MemoryDetails): Projection & Pick<CompactionProjection, "reflectionDigest"> {
+function projectionFromMemoryDetails(details: MemoryDetails): Projection {
 	return {
 		observations: [...details.observations],
 		reflections: [...details.reflections],
-		reflectionDigest: details.reflectionDigest,
 	};
 }
 
@@ -140,8 +140,53 @@ function latestV3CompactionDetails(entries: Entry[]): MemoryDetails | undefined 
 	return undefined;
 }
 
+export function selectReflectionDigest(
+	entries: Entry[],
+	reflections: readonly Reflection[],
+): MemoryDetails["reflectionDigest"] {
+	const reflectionIndexes = new Map(reflections.map((reflection, index) => [reflection.id, index]));
+	const recordedReflectionIds = new Set<string>();
+	let best: { digest: NonNullable<MemoryDetails["reflectionDigest"]>; coverage: number; custom: boolean; entryIndex: number } | undefined;
+
+	const consider = (
+		digest: MemoryDetails["reflectionDigest"],
+		custom: boolean,
+		entryIndex: number,
+	): void => {
+		if (!digest) return;
+		const coverage = reflectionIndexes.get(digest.coversThroughReflectionId);
+		if (coverage === undefined) return;
+		if (custom && !recordedReflectionIds.has(digest.coversThroughReflectionId)) return;
+		if (
+			!best ||
+			coverage > best.coverage ||
+			(coverage === best.coverage && custom && !best.custom) ||
+			(coverage === best.coverage && custom === best.custom && entryIndex > best.entryIndex)
+		) {
+			best = { digest, coverage, custom, entryIndex };
+		}
+	};
+
+	for (let i = 0; i < entries.length; i++) {
+		const entry = entries[i];
+		if (isReflectionsRecordedEntry(entry)) {
+			for (const reflection of entry.data.reflections) recordedReflectionIds.add(reflection.id);
+			continue;
+		}
+		if (isReflectionDigestRecordedEntry(entry)) {
+			consider(entry.data, true, i);
+			continue;
+		}
+		if (entry.type === "compaction" && isMemoryDetails(entry.details)) {
+			consider(entry.details.reflectionDigest, false, i);
+		}
+	}
+
+	return best?.digest;
+}
+
 export function latestReflectionDigest(entries: Entry[]): MemoryDetails["reflectionDigest"] {
-	return latestV3CompactionDetails(entries)?.reflectionDigest;
+	return selectReflectionDigest(entries, fullProjection(entries).reflections);
 }
 
 export function fullProjection(entries: Entry[], upToEntryId?: string): Projection {
@@ -197,21 +242,20 @@ export function buildCompactionProjection(
 		? fullProjection(entries, firstKeptEntryId)
 		: normalProjection;
 
-	const previousDigest = latestV3CompactionDetails(entries)?.reflectionDigest;
+	const reflectionDigest = selectReflectionDigest(entries, projection.reflections);
 	const details: MemoryDetails = {
 		type: OM_FOLDED,
 		version: 1,
 		fullFold,
 		observations: projection.observations,
 		reflections: projection.reflections,
-		...(previousDigest ? { reflectionDigest: previousDigest } : {}),
 	};
 
 	return {
 		fullFold,
 		observations: projection.observations,
 		reflections: projection.reflections,
-		reflectionDigest: previousDigest,
+		reflectionDigest,
 		details,
 	};
 }

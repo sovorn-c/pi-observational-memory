@@ -5,6 +5,7 @@ import {
 	diffProjection,
 	fullProjection,
 	latestFullFoldBoundaryId,
+	selectReflectionDigest,
 	visibleProjection,
 } from "../src/session-ledger/index.js";
 import {
@@ -15,6 +16,7 @@ import {
 	observationsRecordedEntry,
 	oldV2CompactionDetails,
 	reflection,
+	reflectionDigestRecordedEntry,
 	reflectionsRecordedEntry,
 	textCustomMessage,
 } from "./fixtures/session.js";
@@ -190,6 +192,43 @@ describe("session-ledger V3 projections", () => {
 		];
 
 		expect(buildCompactionProjection(entries, "raw-1", { observationsPoolMaxTokens: 50 }).fullFold).toBe(true);
+	});
+
+	it("selects the greatest valid digest coverage and prefers custom checkpoints", () => {
+		const ref1 = reflection("eeeeeeeeeeee", ["aaaaaaaaaaaa"]);
+		const ref2 = reflection("ffffffffffff", ["aaaaaaaaaaaa"]);
+		const legacy = { content: "Legacy digest.", coversThroughReflectionId: ref2.id, tokenCount: 3 };
+		const custom = { content: "Custom digest.", coversThroughReflectionId: ref2.id, tokenCount: 3 };
+		const entries = [
+			textCustomMessage("raw-1", "aaaa"),
+			reflectionsRecordedEntry("om-reflections", { reflections: [ref1, ref2], coversUpToId: "raw-1" }),
+			compactionEntry("cmp-legacy", { firstKeptEntryId: "raw-1", details: memoryDetails({ reflections: [ref1, ref2], reflectionDigest: legacy }) }),
+			reflectionDigestRecordedEntry("om-custom", custom),
+			reflectionDigestRecordedEntry("om-late-stale", {
+				content: "Late stale digest.",
+				coversThroughReflectionId: ref1.id,
+				tokenCount: 3,
+			}),
+		];
+
+		expect(selectReflectionDigest(entries, [ref1, ref2])).toEqual(custom);
+	});
+
+	it("keeps digest checkpoints out of newly rendered compaction details", () => {
+		const obs = observation("aaaaaaaaaaaa", { tokenCount: 100 });
+		const ref = reflection("eeeeeeeeeeee", [obs.id]);
+		const digest = { content: "Digest.", coversThroughReflectionId: ref.id, tokenCount: 2 };
+		const entries = [
+			textCustomMessage("raw-1", "aaaa"),
+			observationsRecordedEntry("om-observations", { observations: [obs], coversUpToId: "raw-1" }),
+			reflectionsRecordedEntry("om-reflections", { reflections: [ref], coversUpToId: "raw-1" }),
+			reflectionDigestRecordedEntry("om-digest", digest),
+		];
+
+		const result = buildCompactionProjection(entries, "raw-1", { observationsPoolMaxTokens: 100 });
+
+		expect(result.reflectionDigest).toEqual(digest);
+		expect(result.details).not.toHaveProperty("reflectionDigest");
 	});
 
 	it("reports visible/full drift", () => {

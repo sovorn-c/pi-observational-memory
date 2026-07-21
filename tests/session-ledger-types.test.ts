@@ -5,8 +5,10 @@ import {
 	OM_OBSERVATIONS_DROPPED,
 	OM_OBSERVATIONS_RECORDED,
 	OM_REFLECTIONS_RECORDED,
+	OM_REFLECTION_DIGEST_RECORDED,
 	buildObservationsDroppedData,
 	buildObservationsRecordedData,
+	buildReflectionDigestRecordedData,
 	buildReflectionsRecordedData,
 	isMemoryDetails,
 	isObservationsDroppedData,
@@ -15,6 +17,8 @@ import {
 	isObservationsRecordedEntry,
 	isObservation,
 	isReflection,
+	isReflectionDigest,
+	isReflectionDigestRecordedEntry,
 	isReflectionsRecordedData,
 	isReflectionsRecordedEntry,
 } from "../src/session-ledger/index.js";
@@ -26,6 +30,7 @@ import {
 	oldV2CompactionDetails,
 	oldV2ObservationEntry,
 	reflection,
+	reflectionDigestRecordedEntry,
 	reflectionsRecordedEntry,
 } from "./fixtures/session.js";
 
@@ -33,6 +38,7 @@ describe("session-ledger V3 type guards and builders", () => {
 	it("exports the V3 custom type constants", () => {
 		expect(OM_OBSERVATIONS_RECORDED).toBe("om.observations.recorded");
 		expect(OM_REFLECTIONS_RECORDED).toBe("om.reflections.recorded");
+		expect(OM_REFLECTION_DIGEST_RECORDED).toBe("om.reflection_digest.recorded");
 		expect(OM_OBSERVATIONS_DROPPED).toBe("om.observations.dropped");
 		expect(OM_FOLDED).toBe("om.folded");
 	});
@@ -98,6 +104,21 @@ describe("session-ledger V3 type guards and builders", () => {
 			observationIds: ["aaaaaaaaaaaa"],
 			coversUpToId: "om-eeeeeeeeeeee",
 		}))).toBe(true);
+	});
+
+	it("accepts branch-local reflection digest checkpoints", () => {
+		const digest = {
+			content: "Durable facts.",
+			coversThroughReflectionId: "eeeeeeeeeeee",
+			tokenCount: 4,
+		};
+		expect(isReflectionDigest(digest)).toBe(true);
+		expect(buildReflectionDigestRecordedData(digest)).toEqual(digest);
+		expect(isReflectionDigestRecordedEntry(reflectionDigestRecordedEntry("om-digest", digest))).toBe(true);
+		expect(isReflectionDigestRecordedEntry(reflectionDigestRecordedEntry("om-invalid", {
+			...digest,
+			coversThroughReflectionId: "missing",
+		}))).toBe(false);
 	});
 
 	it("accepts flat V3 folded memory details", () => {

@@ -8,7 +8,10 @@ export const REFLECTION_RECENT_RATIO = 0.6;
 export type ReflectionContextBudget = {
 	totalTokens: number;
 	digestTokens: number;
+	/** High-water limit for uncovered recent reflections. */
 	recentTokens: number;
+	/** Post-maintenance target, leaving headroom before the next digest update. */
+	recentTargetTokens: number;
 };
 
 export type ReflectionContextSelection = {
@@ -20,8 +23,13 @@ export type ReflectionContextSelection = {
 
 export function reflectionContextBudget(totalTokens: number): ReflectionContextBudget {
 	const total = Math.max(1, Math.floor(totalTokens));
-	const digestTokens = Math.floor(total * REFLECTION_DIGEST_RATIO);
-	return { totalTokens: total, digestTokens, recentTokens: total - digestTokens };
+	const digestTokens = Math.max(1, Math.floor(total * REFLECTION_DIGEST_RATIO));
+	return {
+		totalTokens: total,
+		digestTokens,
+		recentTokens: total - digestTokens,
+		recentTargetTokens: digestTokens,
+	};
 }
 
 /** Select the newest chronological suffix that fits the recent allocation. */

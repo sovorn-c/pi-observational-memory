@@ -1,3 +1,4 @@
+import { selectReflectionDigest } from "./projection.js";
 import {
 	isObservationsDroppedData,
 	isObservationsRecordedData,
@@ -8,6 +9,7 @@ import {
 	type Entry,
 	type Observation,
 	type Reflection,
+	type ReflectionDigest,
 } from "./types.js";
 
 export type FoldLedgerOptions = {
@@ -28,6 +30,8 @@ export type FoldedLedger = {
 	observationsById: Map<string, Observation>;
 	/** All first-valid reflection records by id. */
 	reflectionsById: Map<string, Reflection>;
+	/** Latest valid branch-local digest whose watermark exists in the folded reflections. */
+	reflectionDigest?: ReflectionDigest;
 };
 
 function foldEndIndex(entries: Entry[], upToEntryId: string | undefined): number {
@@ -88,6 +92,7 @@ export function foldLedger(entries: Entry[], options: FoldLedgerOptions = {}): F
 	const observations = Array.from(observationsById.values());
 	const activeObservations = observations.filter((observation) => !droppedObservationIds.has(observation.id));
 	const reflections = Array.from(reflectionsById.values());
+	const reflectionDigest = selectReflectionDigest(entries.slice(0, endIdx + 1), reflections);
 
 	return {
 		observations,
@@ -96,5 +101,6 @@ export function foldLedger(entries: Entry[], options: FoldLedgerOptions = {}): F
 		reflections,
 		observationsById,
 		reflectionsById,
+		...(reflectionDigest ? { reflectionDigest } : {}),
 	};
 }

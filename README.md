@@ -76,9 +76,9 @@ The default reflection context budget is `10,000` tokens:
 - 40% for a digest of older reflections
 - 60% for the newest reflections kept verbatim
 
-When the recent window overflows, the older portion is folded into a replacement digest. The digest stores a watermark so later compactions do not summarize the entire history again. Original reflections are never deleted.
+After each successful reflector batch, background maintenance checks the recent reflection window. When uncovered reflections exceed the 60% high-water allocation, older reflections are folded into a replacement digest until the recent suffix returns to the 40% post-update target. The remaining 20% is headroom for later reflector batches. The digest stores a watermark in a branch-local ledger checkpoint, and original reflections are never deleted.
 
-The digest uses the same model configured for the other memory workers. If no model is available, a bounded fallback prevents the compaction context from growing without limit.
+The digest uses the same model and thinking level configured for the other memory workers and stops after one recording tool call. If generation fails, no checkpoint is appended and the watermark does not advance. Compaction never calls the model: it reads the latest valid checkpoint and renders any uncovered reflections directly.
 
 ## Configuration
 

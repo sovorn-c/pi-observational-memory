@@ -31,6 +31,7 @@ export type TestReflection = {
 
 export const V3_OBSERVATIONS_RECORDED = "om.observations.recorded";
 export const V3_REFLECTIONS_RECORDED = "om.reflections.recorded";
+export const V3_REFLECTION_DIGEST_RECORDED = "om.reflection_digest.recorded";
 export const V3_OBSERVATIONS_DROPPED = "om.observations.dropped";
 export const V3_FOLDED = "om.folded";
 export const V2_OBSERVATION = "om.observation";
@@ -183,6 +184,22 @@ export function reflectionsRecordedEntry(
 		timestamp: DEFAULT_TIMESTAMP,
 		customType: V3_REFLECTIONS_RECORDED,
 		data: args,
+		...overrides,
+	};
+}
+
+export function reflectionDigestRecordedEntry(
+	id: string,
+	data: { content: string; coversThroughReflectionId: string; tokenCount: number },
+	overrides: Partial<TestEntry> = {},
+): TestEntry {
+	return {
+		type: "custom",
+		id,
+		parentId: null,
+		timestamp: DEFAULT_TIMESTAMP,
+		customType: V3_REFLECTION_DIGEST_RECORDED,
+		data,
 		...overrides,
 	};
 }

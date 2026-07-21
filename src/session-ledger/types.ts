@@ -1,5 +1,6 @@
 export const OM_OBSERVATIONS_RECORDED = "om.observations.recorded";
 export const OM_REFLECTIONS_RECORDED = "om.reflections.recorded";
+export const OM_REFLECTION_DIGEST_RECORDED = "om.reflection_digest.recorded";
 export const OM_OBSERVATIONS_DROPPED = "om.observations.dropped";
 export const OM_FOLDED = "om.folded";
 
@@ -60,6 +61,8 @@ export type ObservationsDroppedEntryData = {
 	coversUpToId: string;
 };
 
+export type ReflectionDigestRecordedEntryData = ReflectionDigest;
+
 export type MemoryDetails = {
 	type: typeof OM_FOLDED;
 	version: 1;
@@ -72,6 +75,7 @@ export type MemoryDetails = {
 export type V3MemoryCustomType =
 	| typeof OM_OBSERVATIONS_RECORDED
 	| typeof OM_REFLECTIONS_RECORDED
+	| typeof OM_REFLECTION_DIGEST_RECORDED
 	| typeof OM_OBSERVATIONS_DROPPED;
 
 export function isRelevance(value: unknown): value is Relevance {
@@ -94,7 +98,7 @@ function isTokenCount(value: unknown): value is number {
 	return typeof value === "number" && Number.isFinite(value) && value >= 0;
 }
 
-function isReflectionDigest(value: unknown): value is ReflectionDigest {
+export function isReflectionDigest(value: unknown): value is ReflectionDigest {
 	if (!isPlainRecord(value)) return false;
 	return (
 		isNonEmptyString(value.content) &&
@@ -185,6 +189,14 @@ export function isReflectionsRecordedEntry(entry: Entry): entry is Entry & {
 	return entry.type === "custom" && entry.customType === OM_REFLECTIONS_RECORDED && isReflectionsRecordedData(entry.data);
 }
 
+export function isReflectionDigestRecordedEntry(entry: Entry): entry is Entry & {
+	type: "custom";
+	customType: typeof OM_REFLECTION_DIGEST_RECORDED;
+	data: ReflectionDigestRecordedEntryData;
+} {
+	return entry.type === "custom" && entry.customType === OM_REFLECTION_DIGEST_RECORDED && isReflectionDigest(entry.data);
+}
+
 export function isObservationsDroppedEntry(entry: Entry): entry is Entry & {
 	type: "custom";
 	customType: typeof OM_OBSERVATIONS_DROPPED;
@@ -207,6 +219,12 @@ export function buildReflectionsRecordedData(
 ): ReflectionsRecordedEntryData | undefined {
 	if (reflections.length === 0 || !isNonEmptyString(coversUpToId)) return undefined;
 	return { reflections, coversUpToId };
+}
+
+export function buildReflectionDigestRecordedData(
+	digest: ReflectionDigest,
+): ReflectionDigestRecordedEntryData | undefined {
+	return isReflectionDigest(digest) ? digest : undefined;
 }
 
 export function buildObservationsDroppedData(

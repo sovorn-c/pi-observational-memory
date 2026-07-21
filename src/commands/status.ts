@@ -2,12 +2,12 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { observationPoolMetrics } from "../agents/dropper/pool.js";
 import { resolveCompactAfterTokens } from "../config.js";
 import type { Runtime } from "../runtime.js";
-import { reflectionContextBudget, selectRecentReflections } from "../reflection-context.js";
+import { digestFitsBudget, reflectionContextBudget } from "../reflection-context.js";
 import {
 	diffProjection,
 	foldLedger,
 	fullProjection,
-	latestReflectionDigest,
+	selectReflectionDigest,
 	rawTokensSinceLastCompaction,
 	rawTokensSinceObservationCoverage,
 	rawTokensSinceReflectionCoverage,
@@ -51,9 +51,15 @@ export function registerStatusCommand(pi: ExtensionAPI, runtime: Runtime): void 
 			const visibleReflectionTokens = tokenSum(visible.reflections);
 			const reflectionContextMaxTokens = runtime.config.reflectionContextMaxTokens ?? 10000;
 			const reflectionBudget = reflectionContextBudget(reflectionContextMaxTokens);
-			const recentReflectionContext = selectRecentReflections(visible.reflections, reflectionBudget.recentTokens);
-			const reflectionDigest = latestReflectionDigest(entries);
-			const recentReflectionTokens = tokenSum(recentReflectionContext.recent);
+			const selectedDigest = selectReflectionDigest(entries, visible.reflections);
+			const reflectionDigest = digestFitsBudget(selectedDigest, reflectionBudget) ? selectedDigest : undefined;
+			const digestWatermarkIndex = reflectionDigest
+				? visible.reflections.findIndex((reflection) => reflection.id === reflectionDigest.coversThroughReflectionId)
+				: -1;
+			const recentReflections = digestWatermarkIndex >= 0
+				? visible.reflections.slice(digestWatermarkIndex + 1)
+				: visible.reflections;
+			const recentReflectionTokens = tokenSum(recentReflections);
 			const reflectionContextTokens = recentReflectionTokens + (reflectionDigest?.tokenCount ?? 0);
 			const activeObservationPool = observationPoolMetrics(folded.activeObservations, runtime.config.observationsPoolTargetTokens);
 			const observationLine = appendSuffixes(
@@ -108,10 +114,11 @@ export function registerStatusCommand(pi: ExtensionAPI, runtime: Runtime): void 
 				if (runtime.compactHookInFlight) lines.push("Compaction hook: running");
 			}
 
-			if (runtime.lastObserverError || runtime.lastReflectorError || runtime.lastDropperError) {
+			if (runtime.lastObserverError || runtime.lastReflectorError || runtime.lastReflectionDigestError || runtime.lastDropperError) {
 				lines.push("", "── Last error ──");
 				if (runtime.lastObserverError) lines.push(`Observer: ${runtime.lastObserverError}`);
 				if (runtime.lastReflectorError) lines.push(`Reflector: ${runtime.lastReflectorError}`);
+				if (runtime.lastReflectionDigestError) lines.push(`Reflection digest: ${runtime.lastReflectionDigestError}`);
 				if (runtime.lastDropperError) lines.push(`Dropper: ${runtime.lastDropperError}`);
 			}
 

@@ -1,5 +1,5 @@
 import { agentLoop, type AgentContext, type AgentLoopConfig } from "@earendil-works/pi-agent-core";
-import type { Message, Model } from "@earendil-works/pi-ai";
+import type { Message, Model, ModelThinkingLevel } from "@earendil-works/pi-ai";
 import { Type } from "@earendil-works/pi-ai";
 import type { Static } from "typebox";
 import { boundedMaxTokens } from "../model-budget.js";
@@ -22,6 +22,8 @@ export interface RunReflectionDigestArgs {
 	previousDigest?: ReflectionDigest;
 	olderReflections: Reflection[];
 	maxTokens: number;
+	thinkingLevel?: ModelThinkingLevel;
+	signal?: AbortSignal;
 	agentLoop?: typeof agentLoop;
 }
 
@@ -39,13 +41,18 @@ export async function runReflectionDigest(args: RunReflectionDigestArgs): Promis
 		parameters: RecordDigestSchema,
 		execute: async (_id: string, params: RecordDigestArgs) => {
 			digest = params.content.trim();
-			return { content: [{ type: "text", text: "Reflection digest recorded." }] };
+			return {
+				content: [{ type: "text", text: "Reflection digest recorded." }],
+				terminate: true,
+			};
 		},
 	} as any;
 	const prior = args.previousDigest ? `CURRENT DIGEST:\n${args.previousDigest.content}\n\n` : "";
-	const input = `${prior}REFLECTIONS TO INCORPORATE:\n${reflectionLines(args.olderReflections)}\n\nProduce the complete replacement digest within approximately ${args.maxTokens} tokens.`;
+	const input = `${prior}REFLECTIONS TO INCORPORATE:\n${reflectionLines(args.olderReflections)}\n\nProduce the complete replacement digest. Be as concise as possible, do not aim to fill the budget, and never exceed ${args.maxTokens} tokens.`;
 	const prompts: Message[] = [{ role: "user", content: [{ type: "text", text: input }], timestamp: Date.now() }];
 	const context: AgentContext = { systemPrompt: REFLECTION_DIGEST_SYSTEM, messages: [], tools: [recordDigest] };
+	const reasoning = (args.model as { reasoning?: unknown }).reasoning;
+	const thinkingLevel = args.thinkingLevel ?? "low";
 	const config: AgentLoopConfig = {
 		model: args.model,
 		apiKey: args.apiKey,
@@ -53,9 +60,10 @@ export async function runReflectionDigest(args: RunReflectionDigestArgs): Promis
 		maxTokens: boundedMaxTokens(args.model, args.maxTokens),
 		convertToLlm: (msgs) => msgs as Message[],
 		toolExecution: "sequential",
+		...(reasoning && thinkingLevel !== "off" ? { reasoning: thinkingLevel } : {}),
 	};
 	const loop = args.agentLoop ?? agentLoop;
-	const stream = loop(prompts, context, config);
+	const stream = loop(prompts, context, config, args.signal);
 	for await (const _event of stream) {
 		// Tool execution captures the digest.
 	}

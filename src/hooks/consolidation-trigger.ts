@@ -1,17 +1,21 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { runDropper } from "../agents/dropper/agent.js";
+import { runReflectionDigest } from "../agents/reflection-digest.js";
 import { observationPoolMetrics } from "../agents/dropper/pool.js";
 import { runObserver } from "../agents/observer/agent.js";
 import { runReflector } from "../agents/reflector/agent.js";
 import { debugLog, withDebugLogContext } from "../debug-log.js";
+import { digestFitsBudget, digestTokenCount, reflectionContextBudget, selectRecentReflections } from "../reflection-context.js";
 import { type ResolveResult, type Runtime } from "../runtime.js";
 import { serializeSourceAddressedBranchEntries } from "../serialize.js";
 import {
 	OM_OBSERVATIONS_DROPPED,
 	OM_OBSERVATIONS_RECORDED,
 	OM_REFLECTIONS_RECORDED,
+	OM_REFLECTION_DIGEST_RECORDED,
 	buildObservationsDroppedData,
 	buildObservationsRecordedData,
+	buildReflectionDigestRecordedData,
 	buildReflectionsRecordedData,
 	earlierCoverageMarkerId,
 	foldLedger,
@@ -25,6 +29,7 @@ import {
 	reflectionToSummaryLine,
 	type Entry,
 	type Reflection,
+	type ReflectionDigest,
 } from "../session-ledger/index.js";
 
 type ResolvedModel = Extract<ResolveResult, { ok: true }>;
@@ -74,7 +79,7 @@ function anyStageDue(entries: Entry[], runtime: Runtime): boolean {
 		|| rawTokensSinceReflectionCoverage(entries) >= runtime.config.reflectAfterTokens;
 }
 
-function makeModelResolver(runtime: Runtime, ctx: ConsolidationCtx): (stage: "observer" | "reflector" | "dropper") => Promise<ResolvedModel | undefined> {
+function makeModelResolver(runtime: Runtime, ctx: ConsolidationCtx): (stage: "observer" | "reflector" | "reflection-digest" | "dropper") => Promise<ResolvedModel | undefined> {
 	let cached: ResolveResult | undefined;
 	return async (stage) => {
 		cached ??= await runtime.resolveModel({
@@ -175,6 +180,15 @@ export async function runConsolidationPipeline(
 		await runDropperStage(pi, runtime, ctx, resolveModel, reflectorResult.sameRunReflections, reflectorResult.effectiveReflectionCoverageId);
 	} catch (error) {
 		debugLog("dropper.error", { errorMessage: runtime.recordConsolidationStageError(ctx, "dropper", error) });
+	}
+
+	runtime.consolidationPhase = "reflection-digest";
+	try {
+		await runReflectionDigestStage(pi, runtime, ctx, resolveModel, reflectorResult.sameRunReflections);
+	} catch (error) {
+		debugLog("reflection_digest.error", {
+			errorMessage: runtime.recordConsolidationStageError(ctx, "reflection-digest", error),
+		});
 	}
 }
 
@@ -292,6 +306,124 @@ async function runReflectorStage(
 		sameRunReflections: reflections,
 		effectiveReflectionCoverageId: data.coversUpToId,
 	};
+}
+
+function reflectionIdsMatchPrefix(current: readonly Reflection[], expected: readonly Reflection[]): boolean {
+	if (current.length < expected.length) return false;
+	return expected.every((reflection, index) => current[index]?.id === reflection.id);
+}
+
+function digestCoverageIndex(reflections: readonly Reflection[], digest: ReflectionDigest | undefined): number {
+	return digest
+		? reflections.findIndex((reflection) => reflection.id === digest.coversThroughReflectionId)
+		: -1;
+}
+
+async function runReflectionDigestStage(
+	pi: ExtensionAPI,
+	runtime: Runtime,
+	ctx: ConsolidationCtx,
+	resolveModel: (stage: "reflection-digest") => Promise<ResolvedModel | undefined>,
+	sameRunReflections: Reflection[],
+): Promise<StageOutcome> {
+	if (sameRunReflections.length === 0) return "continue";
+
+	const entries = ctx.sessionManager.getBranch() as Entry[];
+	const folded = foldLedger(entries);
+	const reflections = folded.reflections;
+	const persistedDigest = folded.reflectionDigest;
+	const budget = reflectionContextBudget(runtime.config.reflectionContextMaxTokens);
+	const rebuildDigest = !digestFitsBudget(persistedDigest, budget);
+	const previous = rebuildDigest ? undefined : persistedDigest;
+	const previousCoverage = digestCoverageIndex(reflections, previous);
+	const eligible = previousCoverage >= 0 ? reflections.slice(previousCoverage + 1) : reflections;
+	const uncoveredTokens = eligible.reduce((sum, reflection) => sum + reflection.tokenCount, 0);
+
+	if (!rebuildDigest && uncoveredTokens <= budget.recentTokens) {
+		debugLog("reflection_digest.not_ready", {
+			uncoveredReflectionCount: eligible.length,
+			uncoveredTokens,
+			highWaterTokens: budget.recentTokens,
+		});
+		return "continue";
+	}
+
+	let { older } = selectRecentReflections(eligible, budget.recentTargetTokens);
+	const persistedCoverage = digestCoverageIndex(reflections, persistedDigest);
+	if (rebuildDigest && persistedCoverage >= 0) {
+		const selectedTarget = older.at(-1);
+		const selectedCoverage = selectedTarget
+			? reflections.findIndex((reflection) => reflection.id === selectedTarget.id)
+			: -1;
+		if (persistedCoverage > selectedCoverage) older = reflections.slice(0, persistedCoverage + 1);
+	}
+	const target = older.at(-1);
+	if (!target) return "continue";
+	const targetIndex = reflections.findIndex((reflection) => reflection.id === target.id);
+	if (targetIndex < 0) return "continue";
+	const expectedPrefix = reflections.slice(0, targetIndex + 1);
+
+	if (ctx.hasUI) ctx.ui?.notify(
+		`Observational memory: reflection digest updating (~${uncoveredTokens.toLocaleString()} uncovered tokens)`,
+		"info",
+	);
+	debugLog("reflection_digest.start", {
+		previousCoverageId: previous?.coversThroughReflectionId,
+		rebuildingOversizedDigest: rebuildDigest,
+		uncoveredReflectionCount: eligible.length,
+		uncoveredTokens,
+		digestReflectionCount: older.length,
+		targetCoverageId: target.id,
+		digestBudgetTokens: budget.digestTokens,
+		postUpdateRecentTargetTokens: budget.recentTargetTokens,
+	});
+
+	const resolved = await resolveModel("reflection-digest");
+	if (!resolved) return "continue";
+	const content = await runReflectionDigest({
+		model: resolved.model as any,
+		apiKey: resolved.apiKey,
+		headers: resolved.headers,
+		previousDigest: previous,
+		olderReflections: older,
+		maxTokens: budget.digestTokens,
+		thinkingLevel: runtime.config.model?.thinking ?? "low",
+	});
+	if (!content) {
+		debugLog("reflection_digest.empty", { targetCoverageId: target.id });
+		if (ctx.hasUI) ctx.ui?.notify(
+			"Observational memory: reflection digest returned no usable content",
+			"warning",
+		);
+		return "continue";
+	}
+
+	const digest: ReflectionDigest = {
+		content,
+		coversThroughReflectionId: target.id,
+		tokenCount: digestTokenCount(content),
+	};
+	const data = buildReflectionDigestRecordedData(digest);
+	if (!data) return "continue";
+
+	const currentEntries = ctx.sessionManager.getBranch() as Entry[];
+	const currentFolded = foldLedger(currentEntries);
+	if (!reflectionIdsMatchPrefix(currentFolded.reflections, expectedPrefix)) {
+		debugLog("reflection_digest.discarded", { reason: "reflection_prefix_changed", targetCoverageId: target.id });
+		return "continue";
+	}
+	const currentCoverage = digestCoverageIndex(currentFolded.reflections, currentFolded.reflectionDigest);
+	if (digestFitsBudget(currentFolded.reflectionDigest, budget) && currentCoverage >= targetIndex) {
+		debugLog("reflection_digest.discarded", { reason: "checkpoint_already_current", targetCoverageId: target.id });
+		return "continue";
+	}
+
+	appendEntry(pi, OM_REFLECTION_DIGEST_RECORDED, data);
+	debugLog("reflection_digest.appended", {
+		coversThroughReflectionId: digest.coversThroughReflectionId,
+		tokenCount: digest.tokenCount,
+	});
+	return "continue";
 }
 
 async function runDropperStage(

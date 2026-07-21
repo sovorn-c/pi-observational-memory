@@ -3,11 +3,13 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const mockAgents = vi.hoisted(() => ({
 	runObserver: vi.fn(),
 	runReflector: vi.fn(),
+	runReflectionDigest: vi.fn(),
 	runDropper: vi.fn(),
 }));
 
 vi.mock("../src/agents/observer/agent.js", () => ({ runObserver: mockAgents.runObserver }));
 vi.mock("../src/agents/reflector/agent.js", () => ({ runReflector: mockAgents.runReflector }));
+vi.mock("../src/agents/reflection-digest.js", () => ({ runReflectionDigest: mockAgents.runReflectionDigest }));
 vi.mock("../src/agents/dropper/agent.js", () => ({ runDropper: mockAgents.runDropper }));
 
 import { registerConsolidationTrigger } from "../src/hooks/consolidation-trigger.js";
@@ -15,12 +17,14 @@ import {
 	OM_OBSERVATIONS_DROPPED,
 	OM_OBSERVATIONS_RECORDED,
 	OM_REFLECTIONS_RECORDED,
+	OM_REFLECTION_DIGEST_RECORDED,
 } from "../src/session-ledger/index.js";
 import {
 	observation,
 	observationsDroppedEntry,
 	observationsRecordedEntry,
 	reflection,
+	reflectionDigestRecordedEntry,
 	reflectionsRecordedEntry,
 	textCustomMessage,
 	type TestEntry,
@@ -29,9 +33,11 @@ import {
 beforeEach(() => {
 	mockAgents.runObserver.mockReset();
 	mockAgents.runReflector.mockReset();
+	mockAgents.runReflectionDigest.mockReset();
 	mockAgents.runDropper.mockReset();
 	mockAgents.runObserver.mockResolvedValue(undefined);
 	mockAgents.runReflector.mockResolvedValue(undefined);
+	mockAgents.runReflectionDigest.mockResolvedValue(undefined);
 	mockAgents.runDropper.mockResolvedValue(undefined);
 });
 
@@ -41,6 +47,7 @@ function setup(args: {
 	reflectAfterTokens?: number;
 	observationsPoolMaxTokens?: number;
 	observationsPoolTargetTokens?: number;
+	reflectionContextMaxTokens?: number;
 	passive?: boolean;
 	consolidationInFlight?: boolean;
 	appendEntryReturnsId?: boolean;
@@ -66,14 +73,16 @@ function setup(args: {
 			reflectAfterTokens: args.reflectAfterTokens ?? 1,
 			observationsPoolMaxTokens: args.observationsPoolMaxTokens ?? 100,
 			observationsPoolTargetTokens: args.observationsPoolTargetTokens ?? Math.floor((args.observationsPoolMaxTokens ?? 100) / 2),
+			reflectionContextMaxTokens: args.reflectionContextMaxTokens ?? 10_000,
 			agentMaxTurns: 9,
 			model: { provider: "anthropic", id: "memory", thinking: "minimal" },
 		},
 		consolidationInFlight: args.consolidationInFlight ?? false,
-		consolidationPhase: undefined as "observer" | "reflector" | "dropper" | undefined,
+		consolidationPhase: undefined as "observer" | "reflector" | "reflection-digest" | "dropper" | undefined,
 		resolveFailureNotified: false,
 		lastObserverError: undefined as string | undefined,
 		lastReflectorError: undefined as string | undefined,
+		lastReflectionDigestError: undefined as string | undefined,
 		lastDropperError: undefined as string | undefined,
 		ensureConfig: vi.fn(),
 		resolveModel: vi.fn(async () => ({ ok: true, model: { reasoning: true }, apiKey: "key", headers: { h: "v" } })),
@@ -82,10 +91,11 @@ function setup(args: {
 			launchedWork = work;
 			return Promise.resolve();
 		}),
-		recordConsolidationStageError: vi.fn((ctx, phase: "observer" | "reflector" | "dropper", error: unknown) => {
+		recordConsolidationStageError: vi.fn((ctx, phase: "observer" | "reflector" | "reflection-digest" | "dropper", error: unknown) => {
 			const message = error instanceof Error ? error.message : String(error);
 			if (phase === "observer") runtime.lastObserverError = message;
 			if (phase === "reflector") runtime.lastReflectorError = message;
+			if (phase === "reflection-digest") runtime.lastReflectionDigestError = message;
 			if (phase === "dropper") runtime.lastDropperError = message;
 			ctx.ui?.notify(`Observational memory: ${phase} failed: ${message}`, "warning");
 			return message;
@@ -286,6 +296,201 @@ describe("V3 consolidation trigger", () => {
 		expect(mockAgents.runReflector).toHaveBeenCalledWith(expect.objectContaining({ observations: [obsA], maxTurns: 9, thinkingLevel: "minimal" }));
 		expect(mockAgents.runDropper).not.toHaveBeenCalled();
 		expect(pi.appendEntry).toHaveBeenCalledWith(OM_REFLECTIONS_RECORDED, { reflections: [newRef], coversUpToId: "raw-1" });
+	});
+
+	it("does not update the digest at the exact uncovered high-water threshold", async () => {
+		const priorRef = reflection("eeeeeeeeeeee", ["aaaaaaaaaaaa"], { tokenCount: 3 });
+		const newRef = reflection("ffffffffffff", ["aaaaaaaaaaaa"], { tokenCount: 3 });
+		mockAgents.runReflector.mockResolvedValueOnce([newRef]);
+		const entries = [
+			textCustomMessage("raw-1", "aaaaaaaa"),
+			observationsRecordedEntry("om-obs", { observations: [obsA], coversUpToId: "raw-1" }),
+			reflectionsRecordedEntry("om-ref", { reflections: [priorRef], coversUpToId: "raw-1" }),
+			textCustomMessage("raw-2", "bbbbbbbb"),
+		];
+		const { fire, runLaunchedWork, pi } = setup({
+			entries,
+			observeAfterTokens: 999,
+			reflectionContextMaxTokens: 10,
+		});
+
+		fire();
+		await runLaunchedWork();
+
+		expect(mockAgents.runReflectionDigest).not.toHaveBeenCalled();
+		expect(pi.appendEntry).toHaveBeenCalledTimes(1);
+		expect(pi.appendEntry).toHaveBeenCalledWith(OM_REFLECTIONS_RECORDED, expect.any(Object));
+	});
+
+	it("updates the reflection digest in the background after a successful reflector batch", async () => {
+		const ref1 = reflection("dddddddddddd", ["aaaaaaaaaaaa"], { tokenCount: 4 });
+		const ref2 = reflection("eeeeeeeeeeee", ["aaaaaaaaaaaa"], { tokenCount: 4 });
+		const newRef = reflection("ffffffffffff", ["aaaaaaaaaaaa"], { tokenCount: 4 });
+		mockAgents.runReflector.mockResolvedValueOnce([newRef]);
+		mockAgents.runReflectionDigest.mockResolvedValueOnce("Durable digest.");
+		const entries = [
+			textCustomMessage("raw-1", "aaaaaaaa"),
+			observationsRecordedEntry("om-obs", { observations: [obsA], coversUpToId: "raw-1" }),
+			reflectionsRecordedEntry("om-ref", { reflections: [ref1, ref2], coversUpToId: "raw-1" }),
+			textCustomMessage("raw-2", "bbbbbbbb"),
+		];
+		const { fire, runLaunchedWork, pi } = setup({
+			entries,
+			observeAfterTokens: 999,
+			reflectionContextMaxTokens: 10,
+		});
+
+		fire();
+		await runLaunchedWork();
+
+		expect(mockAgents.runReflectionDigest).toHaveBeenCalledWith(expect.objectContaining({
+			previousDigest: undefined,
+			olderReflections: [ref1, ref2],
+			maxTokens: 4,
+			thinkingLevel: "minimal",
+		}));
+		expect(pi.appendEntry.mock.calls[0]).toEqual([
+			OM_REFLECTIONS_RECORDED,
+			{ reflections: [newRef], coversUpToId: "raw-1" },
+		]);
+		expect(pi.appendEntry.mock.calls[1]).toEqual([
+			OM_REFLECTION_DIGEST_RECORDED,
+			expect.objectContaining({
+				content: "Durable digest.",
+				coversThroughReflectionId: ref2.id,
+			}),
+		]);
+	});
+
+	it("discards a late digest result when a newer checkpoint appears first", async () => {
+		const ref1 = reflection("dddddddddddd", ["aaaaaaaaaaaa"], { tokenCount: 4 });
+		const ref2 = reflection("eeeeeeeeeeee", ["aaaaaaaaaaaa"], { tokenCount: 4 });
+		const newRef = reflection("ffffffffffff", ["aaaaaaaaaaaa"], { tokenCount: 4 });
+		mockAgents.runReflector.mockResolvedValueOnce([newRef]);
+		const entries = [
+			textCustomMessage("raw-1", "aaaaaaaa"),
+			observationsRecordedEntry("om-obs", { observations: [obsA], coversUpToId: "raw-1" }),
+			reflectionsRecordedEntry("om-ref", { reflections: [ref1, ref2], coversUpToId: "raw-1" }),
+			textCustomMessage("raw-2", "bbbbbbbb"),
+		];
+		const harness = setup({ entries, observeAfterTokens: 999, reflectionContextMaxTokens: 10 });
+		mockAgents.runReflectionDigest.mockImplementationOnce(async () => {
+			harness.pi.appendEntry(OM_REFLECTION_DIGEST_RECORDED, {
+				content: "Concurrent newer digest.",
+				coversThroughReflectionId: newRef.id,
+				tokenCount: 3,
+			});
+			return "Late stale digest.";
+		});
+
+		harness.fire();
+		await harness.runLaunchedWork();
+
+		const digestAppends = harness.pi.appendEntry.mock.calls.filter((call) => call[0] === OM_REFLECTION_DIGEST_RECORDED);
+		expect(digestAppends).toHaveLength(1);
+		expect(digestAppends[0]?.[1]).toMatchObject({ content: "Concurrent newer digest." });
+	});
+
+	it("keeps digest failure in the background and continues to dropper maintenance", async () => {
+		const ref1 = reflection("dddddddddddd", ["aaaaaaaaaaaa"], { tokenCount: 4 });
+		const ref2 = reflection("eeeeeeeeeeee", ["aaaaaaaaaaaa"], { tokenCount: 4 });
+		const newRef = reflection("ffffffffffff", ["aaaaaaaaaaaa"], { tokenCount: 4 });
+		mockAgents.runReflector.mockResolvedValueOnce([newRef]);
+		mockAgents.runReflectionDigest.mockRejectedValueOnce(new Error("digest failed"));
+		mockAgents.runDropper.mockResolvedValueOnce(["aaaaaaaaaaaa"]);
+		const entries = [
+			textCustomMessage("raw-1", "aaaaaaaa"),
+			observationsRecordedEntry("om-obs", { observations: [obsA], coversUpToId: "raw-1" }),
+			reflectionsRecordedEntry("om-ref", { reflections: [ref1, ref2], coversUpToId: "raw-1" }),
+			textCustomMessage("raw-2", "bbbbbbbb"),
+		];
+		const { fire, runLaunchedWork, pi, runtime } = setup({
+			entries,
+			observeAfterTokens: 999,
+			reflectionContextMaxTokens: 10,
+			observationsPoolTargetTokens: 5,
+		});
+
+		fire();
+		await runLaunchedWork();
+
+		expect(runtime.lastReflectionDigestError).toBe("digest failed");
+		expect(mockAgents.runDropper).toHaveBeenCalled();
+		expect(mockAgents.runDropper.mock.invocationCallOrder[0]).toBeLessThan(
+			mockAgents.runReflectionDigest.mock.invocationCallOrder[0],
+		);
+		expect(pi.appendEntry.mock.calls.map((call) => call[0])).toEqual([
+			OM_REFLECTIONS_RECORDED,
+			OM_OBSERVATIONS_DROPPED,
+		]);
+	});
+
+	it("uses the previous persisted digest when advancing background coverage", async () => {
+		const ref1 = reflection("cccccccccccc", ["aaaaaaaaaaaa"], { tokenCount: 4 });
+		const ref2 = reflection("dddddddddddd", ["aaaaaaaaaaaa"], { tokenCount: 4 });
+		const ref3 = reflection("eeeeeeeeeeee", ["aaaaaaaaaaaa"], { tokenCount: 4 });
+		const newRef = reflection("ffffffffffff", ["aaaaaaaaaaaa"], { tokenCount: 4 });
+		const previousDigest = {
+			content: "Previous digest.",
+			coversThroughReflectionId: ref1.id,
+			tokenCount: 3,
+		};
+		mockAgents.runReflector.mockResolvedValueOnce([newRef]);
+		mockAgents.runReflectionDigest.mockResolvedValueOnce("Replacement digest.");
+		const entries = [
+			textCustomMessage("raw-1", "aaaaaaaa"),
+			observationsRecordedEntry("om-obs", { observations: [obsA], coversUpToId: "raw-1" }),
+			reflectionsRecordedEntry("om-ref", { reflections: [ref1, ref2, ref3], coversUpToId: "raw-1" }),
+			reflectionDigestRecordedEntry("om-digest", previousDigest),
+			textCustomMessage("raw-2", "bbbbbbbb"),
+		];
+		const { fire, runLaunchedWork } = setup({
+			entries,
+			observeAfterTokens: 999,
+			reflectionContextMaxTokens: 10,
+		});
+
+		fire();
+		await runLaunchedWork();
+
+		expect(mockAgents.runReflectionDigest).toHaveBeenCalledWith(expect.objectContaining({
+			previousDigest,
+			olderReflections: [ref2, ref3],
+		}));
+	});
+
+	it("rebuilds an oversized persisted digest from the full reflection ledger", async () => {
+		const ref1 = reflection("dddddddddddd", ["aaaaaaaaaaaa"], { tokenCount: 4 });
+		const ref2 = reflection("eeeeeeeeeeee", ["aaaaaaaaaaaa"], { tokenCount: 4 });
+		const newRef = reflection("ffffffffffff", ["aaaaaaaaaaaa"], { tokenCount: 4 });
+		const oversizedDigest = {
+			content: "Oversized digest.",
+			coversThroughReflectionId: ref1.id,
+			tokenCount: 8,
+		};
+		mockAgents.runReflector.mockResolvedValueOnce([newRef]);
+		mockAgents.runReflectionDigest.mockResolvedValueOnce("Rebuilt digest.");
+		const entries = [
+			textCustomMessage("raw-1", "aaaaaaaa"),
+			observationsRecordedEntry("om-obs", { observations: [obsA], coversUpToId: "raw-1" }),
+			reflectionsRecordedEntry("om-ref", { reflections: [ref1, ref2], coversUpToId: "raw-1" }),
+			reflectionDigestRecordedEntry("om-digest", oversizedDigest),
+			textCustomMessage("raw-2", "bbbbbbbb"),
+		];
+		const { fire, runLaunchedWork } = setup({
+			entries,
+			observeAfterTokens: 999,
+			reflectionContextMaxTokens: 10,
+		});
+
+		fire();
+		await runLaunchedWork();
+
+		expect(mockAgents.runReflectionDigest).toHaveBeenCalledWith(expect.objectContaining({
+			previousDigest: undefined,
+			olderReflections: [ref1, ref2],
+			maxTokens: 4,
+		}));
 	});
 
 	it("runs dropper after same-run non-empty reflector output and appends non-empty drops", async () => {

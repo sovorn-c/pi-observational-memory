@@ -110,7 +110,7 @@ describe("V3 /om:view", () => {
 					reflections: [ref],
 					reflectionDigest: {
 						content: "Durable preference: preserve concise responses.",
-						coversThroughReflectionId: "dddddddddddd",
+						coversThroughReflectionId: "eeeeeeeeeeee",
 						tokenCount: 7,
 					},
 				}),
@@ -119,7 +119,7 @@ describe("V3 /om:view", () => {
 
 		const { clipboardText } = await setup(entries).run();
 		expect(clipboardText).toContain("── Reflection digest ──");
-		expect(clipboardText).toContain("Covers through: [dddddddddddd] (~7 tokens)");
+		expect(clipboardText).toContain("Covers through: [eeeeeeeeeeee] (~7 tokens)");
 		expect(clipboardText).toContain("Durable preference: preserve concise responses.");
 	});
 

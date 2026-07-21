@@ -3,7 +3,7 @@ import type { Runtime } from "../runtime.js";
 import { copyTextToClipboard } from "../clipboard.js";
 import {
 	fullProjection,
-	latestReflectionDigest,
+	selectReflectionDigest,
 	observationToSummaryLine,
 	reflectionToSummaryLine,
 	visibleProjection,
@@ -73,10 +73,10 @@ export function registerViewCommand(pi: ExtensionAPI, runtime: Runtime, options:
 				);
 			};
 
-			const reflectionDigest = latestReflectionDigest(entries);
-
 			if (mode === "full") {
-				await notifyWithCopy(renderContentOnlyProjection(fullProjection(entries), "recorded", reflectionDigest));
+				const projection = fullProjection(entries);
+				const reflectionDigest = selectReflectionDigest(entries, projection.reflections);
+				await notifyWithCopy(renderContentOnlyProjection(projection, "recorded", reflectionDigest));
 				return;
 			}
 
@@ -85,7 +85,9 @@ export function registerViewCommand(pi: ExtensionAPI, runtime: Runtime, options:
 				return;
 			}
 
-			await notifyWithCopy(renderContentOnlyProjection(visibleProjection(entries), "visible", reflectionDigest));
+			const projection = visibleProjection(entries);
+			const reflectionDigest = selectReflectionDigest(entries, projection.reflections);
+			await notifyWithCopy(renderContentOnlyProjection(projection, "visible", reflectionDigest));
 		},
 	});
 }

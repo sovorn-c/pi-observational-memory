@@ -10,12 +10,18 @@ import {
 	oldV2CompactionDetails,
 	oldV2ObservationEntry,
 	reflection,
+	reflectionDigestRecordedEntry,
 	reflectionsRecordedEntry,
 	textCustomMessage,
 	type TestEntry,
 } from "./fixtures/session.js";
 
-function setup(args: { entries: TestEntry[]; observationsPoolMaxTokens?: number; reflectionContextMaxTokens?: number; compactHookInFlight?: boolean }) {
+function setup(args: {
+	entries: TestEntry[];
+	observationsPoolMaxTokens?: number;
+	reflectionContextMaxTokens?: number;
+	compactHookInFlight?: boolean;
+}) {
 	let handler: ((event: unknown, ctx: unknown) => Promise<unknown>) | undefined;
 	const pi = {
 		on: vi.fn((eventName: string, cb: typeof handler) => {
@@ -28,11 +34,12 @@ function setup(args: { entries: TestEntry[]; observationsPoolMaxTokens?: number;
 		config: {
 			observationsPoolMaxTokens: args.observationsPoolMaxTokens ?? 20_000,
 			reflectionContextMaxTokens: args.reflectionContextMaxTokens ?? 10_000,
+			model: { thinking: "high" },
 		},
 		compactHookInFlight: args.compactHookInFlight ?? false,
 		observerPromise: new Promise(() => {}),
 		resolveModel: vi.fn(() => {
-			throw new Error("resolveModel must not be called");
+			throw new Error("compaction must not resolve a model");
 		}),
 		ensureConfig: vi.fn(),
 	};
@@ -147,7 +154,7 @@ describe("V3 compaction hook", () => {
 		expect(result.compaction.details.reflections.map((ref: any) => ref.id)).toEqual(["eeeeeeeeeeee", "ffffffffffff"]);
 	});
 
-	it("keeps reflection context bounded and persists the digest watermark", async () => {
+	it("renders a persisted digest with only its uncovered reflection suffix", async () => {
 		const reflections = [
 			reflection("aaaaaaaaaaaa", ["111111111111"], { tokenCount: 4 }),
 			reflection("bbbbbbbbbbbb", ["111111111111"], { tokenCount: 4 }),
@@ -155,21 +162,52 @@ describe("V3 compaction hook", () => {
 			reflection("dddddddddddd", ["111111111111"], { tokenCount: 4 }),
 		];
 		const obs = observation("111111111111", { tokenCount: 2, sourceEntryIds: ["raw-1"] });
+		const digest = {
+			content: "Durable digest.",
+			coversThroughReflectionId: "cccccccccccc",
+			tokenCount: 4,
+		};
 		const entries = [
 			textCustomMessage("raw-1", "aaaa"),
 			observationsRecordedEntry("om-observations", { observations: [obs], coversUpToId: "raw-1" }),
 			reflectionsRecordedEntry("om-reflections", { reflections, coversUpToId: "raw-1" }),
+			reflectionDigestRecordedEntry("om-digest", digest),
 		];
-		const { run } = setup({ entries, observationsPoolMaxTokens: 1, reflectionContextMaxTokens: 10 });
+		const { run, runtime } = setup({ entries, observationsPoolMaxTokens: 1 });
 
 		const result = await run("raw-1") as any;
 
-		expect(result.compaction.summary).toContain("## Reflection digest");
+		expect(result.compaction.summary).toContain("## Reflection digest\nDurable digest.");
 		expect(result.compaction.summary).toContain("[dddddddddddd]");
 		expect(result.compaction.summary).not.toContain("[aaaaaaaaaaaa]");
-		expect(result.compaction.details.reflectionDigest).toMatchObject({
-		coversThroughReflectionId: "cccccccccccc",
+		expect(result.compaction.details).not.toHaveProperty("reflectionDigest");
+		expect(runtime.resolveModel).not.toHaveBeenCalled();
 	});
+
+	it("renders all reflections without blocking when background digest maintenance is stale", async () => {
+		const reflections = [
+			reflection("aaaaaaaaaaaa", ["111111111111"], { tokenCount: 6 }),
+			reflection("bbbbbbbbbbbb", ["111111111111"], { tokenCount: 6 }),
+		];
+		const obs = observation("111111111111", { tokenCount: 2, sourceEntryIds: ["raw-1"] });
+		const entries = [
+			textCustomMessage("raw-1", "aaaa"),
+			observationsRecordedEntry("om-observations", { observations: [obs], coversUpToId: "raw-1" }),
+			reflectionsRecordedEntry("om-reflections", { reflections, coversUpToId: "raw-1" }),
+			reflectionDigestRecordedEntry("om-oversized-digest", {
+				content: "Oversized old digest.",
+				coversThroughReflectionId: "aaaaaaaaaaaa",
+				tokenCount: 10,
+			}),
+		];
+		const { run, runtime } = setup({ entries, observationsPoolMaxTokens: 1, reflectionContextMaxTokens: 10 });
+
+		const result = await run("raw-1") as any;
+
+		expect(result.compaction.summary).toContain("[aaaaaaaaaaaa]");
+		expect(result.compaction.summary).toContain("[bbbbbbbbbbbb]");
+		expect(result.compaction.summary).not.toContain("## Reflection digest");
+		expect(runtime.resolveModel).not.toHaveBeenCalled();
 	});
 
 	it("ignores old V2 memory entries and details", async () => {
