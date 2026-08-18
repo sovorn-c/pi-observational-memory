@@ -70,9 +70,9 @@ Dropping does not delete history. Dropped observations remain recallable from le
 
 ### Observer
 
-The observer runs asynchronously from `turn_end` when raw/source tokens after the latest observation coverage marker reach `observeAfterTokens`.
+The observer runs asynchronously from `turn_end` when raw/source tokens after the latest observation coverage marker reach `observeAfterTokens`. After a deliberate empty result, it waits for another `observeAfterTokens` of source tokens before retrying the uncovered range.
 
-It receives raw/source entries only, validates source ids, and appends a non-empty `om.observations.recorded` entry. If there is nothing worth recording, it writes no entry and the raw range remains eligible for a later observer run.
+It receives an oldest-first chunk of raw/source entries, validates source ids, and appends a non-empty `om.observations.recorded` entry. Chunking targets a fixed 60,000 estimated tokens but always includes at least one entry, so a single oversized entry cannot stall coverage. If there is nothing worth recording, it writes no entry and leaves the raw range uncovered.
 
 ### Reflector
 
@@ -94,7 +94,7 @@ The dropper can only drop active observation ids. It cannot rewrite or merge obs
 
 ### Compaction hook
 
-The compaction hook runs during `session_before_compact`:
+The compaction hook runs during `session_before_compact`. When V3 memory exists, it is deterministic and model-free:
 
 - it does not run observer, reflector, reflection-digest maintenance, or dropper;
 - it folds/projects ledger state and renders the summary;
@@ -104,6 +104,8 @@ The compaction hook runs during `session_before_compact`:
 If digest maintenance is late or failed, compaction renders the uncovered reflections directly. This may temporarily exceed `reflectionContextMaxTokens`, but it avoids both blocking compaction and silently dropping durable context.
 
 Observation projection remains unchanged. Reflection context is split internally into a digest of older reflections and a recent suffix, controlled by `reflectionContextMaxTokens`; the full reflection ledger is retained.
+
+If the projection is empty, the hook returns no extension compaction and Pi uses its native summarizer. This preserves pre-cut context instead of persisting an empty summary. Prepared V3 compactions remain effectively instantaneous compared with V2.
 
 ## Ledger entries
 

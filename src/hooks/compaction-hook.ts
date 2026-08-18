@@ -1,4 +1,8 @@
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import type {
+	ExtensionAPI,
+	ExtensionContext,
+	SessionBeforeCompactEvent,
+} from "@earendil-works/pi-coding-agent";
 
 import { digestFitsBudget, reflectionContextBudget } from "../reflection-context.js";
 import type { Runtime } from "../runtime.js";
@@ -40,7 +44,7 @@ function buildReflectionContext(
 }
 
 export function registerCompactionHook(pi: ExtensionAPI, runtime: Runtime): void {
-	pi.on("session_before_compact", async (event: any, ctx: any) => {
+	pi.on("session_before_compact", async (event: SessionBeforeCompactEvent, ctx: ExtensionContext) => {
 		if (runtime.compactHookInFlight) {
 			if (ctx.hasUI) {
 				ctx.ui.notify(
@@ -63,6 +67,10 @@ export function registerCompactionHook(pi: ExtensionAPI, runtime: Runtime): void
 			);
 			const reflectionContext = buildReflectionContext(projection, runtime);
 			const summary = renderSummary(projection.reflections, projection.observations, reflectionContext);
+			if (summary.length === 0) {
+				// Decline ownership so Pi's native summarizer preserves the pre-cut context.
+				return;
+			}
 
 			return {
 				compaction: {

@@ -34,6 +34,12 @@ export interface Config {
 	observeAfterTokens: number;
 	reflectAfterTokens: number;
 	reflectionContextMaxTokens: number;
+	/**
+	 * Maximum estimated source tokens serialized into a single observer chunk.
+	 * Unset (default) derives the cap from the resolved memory model's context
+	 * window; see {@link resolveObserverChunkMaxTokens}.
+	 */
+	observerChunkMaxTokens?: number;
 	compactAfterTokens: number;
 	compactAfterTokensMode: CompactAfterTokensMode;
 	compactAfterTokensRatio: number;
@@ -41,6 +47,7 @@ export interface Config {
 	observationsPoolTargetTokens: number;
 	agentMaxTurns: number;
 	model?: ConfiguredModel;
+	showWorkerNotifications: boolean;
 	passive: boolean;
 	debugLog: boolean;
 }
@@ -55,6 +62,7 @@ export const DEFAULTS: Config = {
 	observationsPoolMaxTokens: 20_000,
 	observationsPoolTargetTokens: 10_000,
 	agentMaxTurns: 16,
+	showWorkerNotifications: true,
 	passive: false,
 	debugLog: false,
 };
@@ -78,7 +86,49 @@ export function resolveCompactAfterTokens(config: Config, contextWindow: number 
 	return config.compactAfterTokens;
 }
 
-export const THINKING_LEVEL_VALUES: readonly ModelThinkingLevel[] = ["off", "minimal", "low", "medium", "high", "xhigh"] as const;
+export const THINKING_LEVEL_VALUES: readonly ModelThinkingLevel[] = ["off", "minimal", "low", "medium", "high", "xhigh", "max"] as const;
+
+/** Observer chunk cap used when no config is set and the model's context window is unknown. */
+export const OBSERVER_CHUNK_FALLBACK_MAX_TOKENS = 60_000;
+
+/** Smallest useful observer chunk: enough for labels, omission markers, and source context. */
+export const OBSERVER_CHUNK_MIN_TOKENS = 256;
+
+/**
+ * Fraction of the memory model's context window used for the derived observer
+ * chunk cap. Chunk sizes are estimated at ~4 chars/token, which can undercount
+ * real tokens by up to ~4x on non-ASCII content, so 0.2 keeps even the worst
+ * case at ~80% of the window with room left for the system prompt, prior
+ * memory, and the response.
+ */
+export const OBSERVER_CHUNK_CONTEXT_RATIO = 0.2;
+
+/**
+ * Resolve the maximum estimated tokens the observer serializes into one chunk.
+ *
+ * An explicit `observerChunkMaxTokens` config value always wins. Otherwise the
+ * cap is `floor(contextWindow * OBSERVER_CHUNK_CONTEXT_RATIO)` for the resolved
+ * memory model, falling back to {@link OBSERVER_CHUNK_FALLBACK_MAX_TOKENS} when
+ * the context window is unavailable.
+ *
+ * Without a cap, a backlog that outgrows the model's context window (e.g.
+ * after repeated observer failures, or when the extension is enabled mid-way
+ * into a long session) makes every observer call fail, so coverage never
+ * advances and the session can never recover. With the cap, oversized backlogs
+ * are drained oldest-first across successive runs.
+ */
+export function resolveObserverChunkMaxTokens(config: Config, contextWindow: number | undefined): number {
+	if (config.observerChunkMaxTokens !== undefined && config.observerChunkMaxTokens > 0) {
+		return Math.max(OBSERVER_CHUNK_MIN_TOKENS, config.observerChunkMaxTokens);
+	}
+	if (typeof contextWindow === "number" && Number.isFinite(contextWindow) && contextWindow > 0) {
+		return Math.max(
+			OBSERVER_CHUNK_MIN_TOKENS,
+			Math.floor(contextWindow * OBSERVER_CHUNK_CONTEXT_RATIO),
+		);
+	}
+	return OBSERVER_CHUNK_FALLBACK_MAX_TOKENS;
+}
 
 const SETTINGS_KEY = "observational-memory";
 const PASSIVE_ENV = "PI_OBSERVATIONAL_MEMORY_PASSIVE";
@@ -137,6 +187,7 @@ function normalizeSettingsConfig(value: Record<string, unknown>): Partial<Config
 		"observeAfterTokens",
 		"reflectAfterTokens",
 		"reflectionContextMaxTokens",
+		"observerChunkMaxTokens",
 		"compactAfterTokens",
 		"observationsPoolMaxTokens",
 		"observationsPoolTargetTokens",
@@ -151,6 +202,7 @@ function normalizeSettingsConfig(value: Record<string, unknown>): Partial<Config
 	}
 	const ratio = validRatioOrUndefined(value.compactAfterTokensRatio);
 	if (ratio !== undefined) normalized.compactAfterTokensRatio = ratio;
+	if (typeof value.showWorkerNotifications === "boolean") normalized.showWorkerNotifications = value.showWorkerNotifications;
 	if (typeof value.passive === "boolean") normalized.passive = value.passive;
 	if (typeof value.debugLog === "boolean") normalized.debugLog = value.debugLog;
 	const model = normalizeModel(value.model);
