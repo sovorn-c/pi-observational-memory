@@ -1,17 +1,19 @@
 import { agentLoop, type AgentContext, type AgentLoopConfig, type AgentTool } from "@earendil-works/pi-agent-core";
 import type { Message, Model, ModelThinkingLevel } from "@earendil-works/pi-ai";
 import { Type } from "@earendil-works/pi-ai";
+import { streamSimple } from "@earendil-works/pi-ai/compat";
 import type { Static } from "typebox";
 import { hashId } from "../../ids.js";
+import { logAgentStreamError } from "../stream-errors.js";
 import { AGENT_LOOP_MAX_TOKENS, boundedMaxTokens } from "../../model-budget.js";
 import { OBSERVER_SYSTEM } from "./prompts.js";
 import { nowTimestamp, truncateRecordContent } from "../../serialize.js";
 import type { Observation, Relevance } from "../../session-ledger/index.js";
-import { estimateStringTokens } from "../../tokens.js";
+import { observationLineTokenCount } from "../../tokens.js";
 
 interface RunObserverArgs {
 	model: Model<any>;
-	apiKey: string;
+	apiKey?: string;
 	headers?: Record<string, string>;
 	priorReflections: string[];
 	priorObservations: string[];
@@ -59,6 +61,21 @@ const RecordObservationsSchema = Type.Object({
 });
 
 type RecordObservationsArgs = Static<typeof RecordObservationsSchema>;
+
+/**
+ * Thrown when the agent loop ends with an API/stream failure (`stopReason`
+ * `"error"`/`"aborted"`) without recording anything. agent-core returns such
+ * runs normally, so without this the caller cannot tell a hard failure from a
+ * deliberate empty result (#32).
+ */
+export class ObserverStreamError extends Error {
+	readonly stopReason: string;
+	constructor(stopReason: string, errorMessage?: string) {
+		super(`observer stream ended with stopReason "${stopReason}"${errorMessage ? `: ${errorMessage}` : ""}`);
+		this.name = "ObserverStreamError";
+		this.stopReason = stopReason;
+	}
+}
 
 function joinOrEmpty(items: string[]): string {
 	return items.length ? items.join("\n") : "(none yet)";
@@ -118,7 +135,12 @@ export async function runObserver(args: RunObserverArgs): Promise<Observation[] 
 					timestamp: obs.timestamp,
 					relevance: obs.relevance as Relevance,
 					sourceEntryIds,
-					tokenCount: estimateStringTokens(content),
+					tokenCount: observationLineTokenCount({
+						id,
+						timestamp: obs.timestamp,
+						relevance: obs.relevance,
+						content,
+					}),
 				});
 				added++;
 			}
@@ -186,12 +208,23 @@ ${conversation}`;
 	};
 
 	const loop = args.agentLoop ?? agentLoop;
-	const stream = loop(prompts, context, config, signal);
-	for await (const _event of stream) {
+	const stream = loop(prompts, context, config, signal, streamSimple);
+	let streamError: { stopReason: string; errorMessage?: string } | undefined;
+	for await (const event of stream) {
 		// Drain events; the tool's execute already collects records.
+		logAgentStreamError("observer", event);
+		// Watch for a terminal API/stream failure so it is not conflated with
+		// a deliberate empty result.
+		const message = (event as { message?: { role?: string; stopReason?: string; errorMessage?: string } }).message;
+		if (message?.role === "assistant" && (message.stopReason === "error" || message.stopReason === "aborted")) {
+			streamError = { stopReason: message.stopReason, errorMessage: message.errorMessage };
+		}
 	}
 	await stream.result();
 
-	if (accumulated.size === 0) return undefined;
+	if (accumulated.size === 0) {
+		if (streamError) throw new ObserverStreamError(streamError.stopReason, streamError.errorMessage);
+		return undefined;
+	}
 	return Array.from(accumulated.values());
 }

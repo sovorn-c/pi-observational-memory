@@ -1,6 +1,7 @@
 import { agentLoop, type AgentContext, type AgentLoopConfig } from "@earendil-works/pi-agent-core";
 import type { Message, Model, ModelThinkingLevel } from "@earendil-works/pi-ai";
 import { Type } from "@earendil-works/pi-ai";
+import { streamSimple } from "@earendil-works/pi-ai/compat";
 import type { Static } from "typebox";
 import { boundedMaxTokens } from "../model-budget.js";
 import { estimateStringTokens } from "../tokens.js";
@@ -17,7 +18,7 @@ type RecordDigestArgs = Static<typeof RecordDigestSchema>;
 
 export interface RunReflectionDigestArgs {
 	model: Model<any>;
-	apiKey: string;
+	apiKey?: string;
 	headers?: Record<string, string>;
 	previousDigest?: ReflectionDigest;
 	olderReflections: Reflection[];
@@ -63,7 +64,7 @@ export async function runReflectionDigest(args: RunReflectionDigestArgs): Promis
 		...(reasoning && thinkingLevel !== "off" ? { reasoning: thinkingLevel } : {}),
 	};
 	const loop = args.agentLoop ?? agentLoop;
-	const stream = loop(prompts, context, config, args.signal);
+	const stream = loop(prompts, context, config, args.signal, streamSimple);
 	for await (const _event of stream) {
 		// Tool execution captures the digest.
 	}

@@ -32,6 +32,7 @@ The extension loads config once for its runtime. After changing settings, restar
     "observeAfterTokens": 10000,
     "reflectAfterTokens": 20000,
     "reflectionContextMaxTokens": 10000,
+    "observerChunkMaxTokens": 60000,
     "compactAfterTokens": 81000,
     "observationsPoolMaxTokens": 20000,
     "observationsPoolTargetTokens": 10000,
@@ -41,6 +42,7 @@ The extension loads config once for its runtime. After changing settings, restar
       "id": "google/gemma-4-31b-it",
       "thinking": "low"
     },
+    "showWorkerNotifications": true,
     "passive": false,
     "debugLog": false
   }
@@ -52,11 +54,12 @@ You can omit everything. Defaults work for ordinary sessions, and if `model` is 
 ## Settings reference
 
 | Setting | Type | Default | What it controls |
-|---|---:|---:|---|
+| --- | ---: | ---: | --- |
 | `observeAfterTokens` | positive integer | `10000` | Raw/source token threshold for observer runs. |
 | `reflectAfterTokens` | positive integer | `20000` | Raw/source token threshold for reflector runs; successful reflection creates dropper maintenance opportunities. |
 | `reflectionContextMaxTokens` | positive integer | `10000` | Maximum reflection context rendered during compaction; internally split 40% digest and 60% recent reflections. The full reflection ledger remains intact. |
-| `compactAfterTokens` | positive integer | `81000` | Raw/source token threshold for proactive auto-compaction. |
+| `observerChunkMaxTokens` | positive integer | derived; minimum `256` | Maximum estimated tokens sent to one observer run. Unset: 20% of the resolved memory model's context window, or `60000` when unknown. |
+| `compactAfterTokens` | positive integer | `81000` | Estimated source-entry threshold for proactive auto-compaction, counted after the latest compaction boundary. |
 | `observationsPoolMaxTokens` | positive integer | `20000` | Normal compaction-projection observation-token pressure that makes compaction do a full fold. |
 | `observationsPoolTargetTokens` | positive integer below max | half of `observationsPoolMaxTokens` | Folded active observation target used by post-reflection dropper maintenance. |
 | `agentMaxTurns` | positive integer | `16` | Shared nested-agent turn cap for observer, reflector, and dropper. |
@@ -64,10 +67,11 @@ You can omit everything. Defaults work for ordinary sessions, and if `model` is 
 | `model.provider` | string | unset | Provider name in Pi's model registry. Required when `model` is set. |
 | `model.id` | string | unset | Model id in Pi's model registry. Required when `model` is set. |
 | `model.thinking` | enum | unset; workers fall back to `low` | Optional reasoning/thinking level for memory workers. |
+| `showWorkerNotifications` | boolean | `true` | Shows routine observer, reflector, and dropper progress notifications. |
 | `passive` | boolean | `false` | Disables proactive background memory and auto-compaction triggers. |
 | `debugLog` | boolean | `false` | Writes best-effort per-session extension debug events to Pi's agent directory. |
 
-Valid `model.thinking` values are `off`, `minimal`, `low`, `medium`, `high`, and `xhigh`.
+Valid `model.thinking` values are `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, and `max`.
 
 Invalid values are ignored. Positive-integer settings must be finite integers greater than zero. `observationsPoolTargetTokens` must also be below `observationsPoolMaxTokens`; if omitted or invalid, it is derived as `Math.floor(observationsPoolMaxTokens / 2)`.
 
@@ -77,7 +81,15 @@ Default: `10000`.
 
 The observer runs from Pi's `turn_end` hook. It counts raw/source tokens after the latest `om.observations.recorded.data.coversUpToId` marker. When the count reaches `observeAfterTokens`, the observer receives source entries after that marker and may append a non-empty `om.observations.recorded` ledger entry.
 
-Lower values create smaller chunks and more frequent model calls. Higher values reduce model-call frequency but let unobserved raw conversation accumulate longer. If the observer emits no observations, no ledger entry is written and the same range remains eligible for a later observer run.
+Lower values create smaller chunks and more frequent model calls. Higher values reduce model-call frequency but let unobserved raw conversation accumulate longer. If the observer deliberately emits no observations, no ledger entry is written; the same range remains uncovered, and the observer retries after another `observeAfterTokens` of source tokens accumulate.
+
+## `observerChunkMaxTokens`
+
+Default: derived as 20% of the resolved memory model's context window, or `60000` when that window is unavailable.
+
+This caps the source-addressed text sent to one observer run. Complete source entries are added oldest-first while they fit; remaining entries stay eligible for later runs. If the oldest entry alone exceeds the budget, the observer receives a clearly marked head/tail excerpt instead of an over-context request. The original session entry is not modified, and observations still cite its original source id so the source remains traceable in the session ledger.
+
+Set an explicit value when a provider exposes a context window that differs from Pi's model metadata. Values below `256` are clamped to `256` so a chunk can always carry a complete source label, omission marker, and useful context. Keep room for the observer system prompt, prior observations/reflections, tool schemas, and output; setting this equal to the full model window will usually fail.
 
 ## `reflectAfterTokens`
 
@@ -108,9 +120,9 @@ Compaction itself remains model-free. It reads the latest valid checkpoint and r
 
 Default: `81000`.
 
-The auto-compaction trigger runs from Pi's `agent_end` hook. It counts raw/source tokens after the latest compaction boundary. If the count reaches `compactAfterTokens`, the extension defers with `setTimeout(0)`, checks that Pi is idle, re-checks the threshold, and calls `ctx.compact()`.
+The auto-compaction trigger runs from Pi's `agent_settled` hook, after retries, automatic compaction, and queued continuation finish. It counts estimated source-entry tokens after the latest compaction boundary. The count starts at `firstKeptEntryId` when Pi provides that boundary, so retained source entries remain part of the metric. Memory ledger entries and compaction metadata contribute zero. If the count reaches `compactAfterTokens`, the extension defers with `setTimeout(0)`, checks that Pi is idle, re-checks the same metric, and calls `ctx.compact()`. Pi's provider context usage is not used for this threshold.
 
-This trigger does not wait for observer, reflector, reflection-digest, or dropper work. Actual compaction summary creation happens later in `session_before_compact` and performs only deterministic projection and rendering.
+This trigger does not wait for observer, reflector, reflection-digest, or dropper work. Actual compaction summary creation happens later in `session_before_compact` and performs only deterministic projection and rendering. This trigger does not wait for observer, reflector, or dropper work. Actual compaction summary creation happens later in `session_before_compact`. A non-empty V3 projection is rendered deterministically and model-free; an empty projection delegates to Pi's native summarizer so prior context is not replaced by an empty summary.
 
 Pi's own window-pressure compaction and manual compaction can still happen independently of this proactive trigger.
 
@@ -162,7 +174,13 @@ Set `model` when you want the observer, reflector, and dropper to use a cheaper 
 }
 ```
 
-`provider` and `id` must both be non-empty strings. `thinking` is optional. If the configured model cannot be resolved, the runtime attempts to fall back to the current session model and notifies once. If no usable model or API key is available, the relevant background worker skips/fails safely rather than inventing memory.
+`provider` and `id` must both be non-empty strings. `thinking` is optional. If the configured model cannot be resolved, the runtime attempts to fall back to the current session model and notifies once. Memory workers accept either an API key or OAuth-style auth headers (e.g. `Authorization: Bearer …`), so OAuth-authenticated providers work without an API key. If no usable model or credentials are available, the relevant background worker skips/fails safely rather than inventing memory.
+
+## `showWorkerNotifications`
+
+Default: `true`.
+
+When `false`, the extension hides routine observer, reflector, and dropper progress notifications (including deliberate-empty observer info messages). Model fallback/unavailability, worker failures (including observer stream errors), compaction notifications, and explicit `/om:*` command output remain visible.
 
 ## `passive`
 
@@ -217,7 +235,7 @@ Debug-log write failures do not change memory behavior.
 V3 is not backwards compatible with V2 settings. Old keys are silently ignored and do not act as aliases.
 
 | V2 setting | V3 setting | Migration note |
-|---|---|---|
+| --- | --- | --- |
 | `observationThresholdTokens` | `observeAfterTokens` | Rename. Same rough observer-cadence role. |
 | `compactionThresholdTokens` | `compactAfterTokens` | Rename. Same rough proactive-compaction role. |
 | `reflectionThresholdTokens` | `reflectAfterTokens`, `observationsPoolMaxTokens`, and/or `observationsPoolTargetTokens` | Split. Use `reflectAfterTokens` for reflector cadence, `observationsPoolMaxTokens` for compaction full-fold pressure, and `observationsPoolTargetTokens` for dropper active observation maintenance. |

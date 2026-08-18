@@ -48,7 +48,69 @@ describe("Runtime V3 behavior", () => {
 		const registry = modelRegistry({ auth: { ok: false } });
 		await expect(runtime.resolveModel({ model: { provider: "anthropic" }, modelRegistry: registry, hasUI: false })).resolves.toEqual({
 			ok: false,
-			reason: 'no API key for provider "anthropic"',
+			reason: 'no API key or auth headers for provider "anthropic"',
+		});
+	});
+
+	it("accepts OAuth-shaped auth (headers only, no apiKey)", async () => {
+		const runtime = new Runtime();
+		const model = { provider: "kimi-coding", id: "kimi-for-coding" };
+		const registry = modelRegistry({
+			auth: { ok: true, apiKey: undefined, headers: { Authorization: "Bearer oauth-token" } },
+		});
+
+		const result = await runtime.resolveModel({ model, modelRegistry: registry, hasUI: false });
+
+		expect(result).toEqual({
+			ok: true,
+			model,
+			apiKey: undefined,
+			headers: { Authorization: "Bearer oauth-token" },
+		});
+	});
+
+	it("accepts apiKey auth unchanged", async () => {
+		const runtime = new Runtime();
+		const model = { provider: "anthropic", id: "claude" };
+		const registry = modelRegistry({ auth: { ok: true, apiKey: "sk-ant-key" } });
+
+		const result = await runtime.resolveModel({ model, modelRegistry: registry, hasUI: false });
+
+		expect(result).toEqual({ ok: true, model, apiKey: "sk-ant-key", headers: undefined });
+	});
+
+	it("rejects auth that carries neither apiKey nor usable headers", async () => {
+		const runtime = new Runtime();
+		const model = { provider: "xai" };
+
+		for (const auth of [
+			{ ok: true },
+			{ ok: true, apiKey: "" },
+			{ ok: true, headers: {} },
+			{ ok: true, headers: { Authorization: "" } },
+		]) {
+			const registry = modelRegistry({ auth });
+			await expect(runtime.resolveModel({ model, modelRegistry: registry, hasUI: false })).resolves.toEqual({
+				ok: false,
+				reason: 'no API key or auth headers for provider "xai"',
+			});
+		}
+	});
+
+	it("points OAuth providers at /login when auth resolution fails", async () => {
+		const runtime = new Runtime();
+		const model = { provider: "openai-codex", id: "gpt-5-codex" };
+		const registry = {
+			...modelRegistry({ auth: { ok: false, error: "refresh failed" } }),
+			isUsingOAuth: vi.fn((candidate: { provider?: string }) => candidate?.provider === "openai-codex"),
+		};
+
+		const result = await runtime.resolveModel({ model, modelRegistry: registry, hasUI: false });
+
+		expect(registry.isUsingOAuth).toHaveBeenCalledWith(model);
+		expect(result).toEqual({
+			ok: false,
+			reason: 'authentication failed for provider "openai-codex" — OAuth credentials may have expired; run \'/login openai-codex\' to re-authenticate',
 		});
 	});
 

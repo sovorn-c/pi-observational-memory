@@ -1,18 +1,21 @@
 import { describe, expect, it } from "vitest";
 
-import { normalizeSourceEntryIds, OBSERVATION_TIMESTAMP_PATTERN, runObserver } from "../src/agents/observer/agent.js";
-import { estimateStringTokens } from "../src/tokens.js";
+import { normalizeSourceEntryIds, OBSERVATION_TIMESTAMP_PATTERN, ObserverStreamError, runObserver } from "../src/agents/observer/agent.js";
 
-function fakeAgentLoop(handler: (prompts: any[], context: any, config: any) => Promise<void> | void): any {
+function fakeAgentLoop(handler: (prompts: any[], context: any, config: any) => Promise<void> | void, events: any[] = []): any {
 	return ((prompts: any[], context: any, config: any) => ({
 		async *[Symbol.asyncIterator]() {
-			// No streaming events needed for these tests.
+			for (const event of events) yield event;
 		},
 		result: async () => {
 			await handler(prompts, context, config);
 			return {};
 		},
 	})) as any;
+}
+
+function assistantEndEvent(stopReason: string, errorMessage?: string): any {
+	return { type: "message_end", message: { role: "assistant", stopReason, errorMessage } };
 }
 
 describe("OBSERVATION_TIMESTAMP_PATTERN", () => {
@@ -71,7 +74,8 @@ describe("runObserver", () => {
 			timestamp: "2026-05-02 10:30",
 			relevance: "high",
 			sourceEntryIds: ["entry-a"],
-			tokenCount: estimateStringTokens(content),
+			// tokenCount is code-computed from the full rendered line (id + timestamp + relevance + content).
+			tokenCount: 18,
 		});
 		expect(observations?.[0].id).toMatch(/^[a-f0-9]{12}$/);
 	});
@@ -105,6 +109,29 @@ describe("runObserver", () => {
 	it("returns undefined when no tool call records observations", async () => {
 		const loop = fakeAgentLoop(() => {});
 		await expect(runObserver({ ...baseArgs, agentLoop: loop })).resolves.toBeUndefined();
+	});
+
+	it("throws ObserverStreamError when the stream errors with nothing recorded", async () => {
+		for (const stopReason of ["error", "aborted"]) {
+			const loop = fakeAgentLoop(() => {}, [assistantEndEvent(stopReason, "prompt is too long")]);
+			const error = await runObserver({ ...baseArgs, agentLoop: loop }).catch((e) => e);
+			expect(error).toBeInstanceOf(ObserverStreamError);
+			expect(error.stopReason).toBe(stopReason);
+			expect(error.message).toContain("prompt is too long");
+		}
+	});
+
+	it("keeps partial observations when the stream errors after recording", async () => {
+		const loop = fakeAgentLoop(async (_prompts, context) => {
+			await context.tools[0].execute("tool-1", {
+				observations: [{ timestamp: "2026-05-02 10:30", content: "Kept despite later error", relevance: "high", sourceEntryIds: ["entry-a"] }],
+			});
+		}, [assistantEndEvent("error", "gateway timeout")]);
+
+		const observations = await runObserver({ ...baseArgs, agentLoop: loop });
+
+		expect(observations).toHaveLength(1);
+		expect(observations?.[0].content).toBe("Kept despite later error");
 	});
 
 	it("uses maxTurns as an observer turn cap", async () => {

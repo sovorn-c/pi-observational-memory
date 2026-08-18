@@ -2,7 +2,7 @@
 
 This is the V3 technical reference for `pi-observational-memory`.
 
-V3 is ledger-centered: memory state is reconstructed by folding V3 ledger entries on the current branch. Compaction is model-free and renders a projection of that ledger into the summary the agent sees.
+V3 is ledger-centered: memory state is reconstructed by folding V3 ledger entries on the current branch. When that projection is non-empty, V3 renders it model-free into the summary the agent sees. Empty projections delegate to Pi's native summarizer.
 
 ## Runtime entry points
 
@@ -12,7 +12,7 @@ V3 is ledger-centered: memory state is reconstructed by folding V3 ledger entrie
 |---|---|
 | `turn_end` observer trigger | Maybe run the observer in the background. |
 | `turn_end` reflect/drop trigger | Maybe run the due reflector, then run dropper maintenance only after same-run successful reflection. |
-| `agent_end` compaction trigger | Maybe call `ctx.compact()` when idle and over `compactAfterTokens`. |
+| `agent_settled` compaction trigger | Maybe call `ctx.compact()` when idle and over `compactAfterTokens`, after Pi finishes retries and queued continuation. |
 | `session_before_compact` hook | Build the V3 compaction payload deterministically. |
 | `/om:status` | Show ledger counts, drift, progress clocks, and worker state. |
 | `/om:view` | Show visible or full memory content and attempt to copy the rendered memory text. |
@@ -23,7 +23,7 @@ V3 is ledger-centered: memory state is reconstructed by folding V3 ledger entrie
 ```mermaid
 flowchart TD
     TE[turn_end]
-    AE[agent_end]
+    AE[agent_settled]
     SBC[session_before_compact]
 
     ObsDue{raw tokens since observation coverage<br/>≥ observeAfterTokens?}
@@ -178,15 +178,16 @@ The observer trigger runs on `turn_end`.
 3. Skip if `observerInFlight` is true.
 4. Count raw/source tokens since latest observation coverage.
 5. Skip if below `observeAfterTokens`.
-6. Select source entries after the latest observation coverage marker.
-7. Serialize those source entries for the observer prompt.
-8. Resolve the memory model.
-9. Run `runObserver()` in a background task.
-10. Validate source ids returned by the model.
-11. Compute deterministic 12-character ids and per-observation token counts in code.
-12. Append `om.observations.recorded` only if at least one observation was accepted.
+6. Honor any deliberate-empty backoff until another `observeAfterTokens` of source tokens arrive.
+7. Select the oldest size-capped chunk after the latest observation coverage marker.
+8. Serialize those source entries for the observer prompt.
+9. Resolve the memory model.
+10. Run `runObserver()` in a background task.
+11. Validate source ids returned by the model.
+12. Compute deterministic 12-character ids and per-observation token counts in code.
+13. Append `om.observations.recorded` only if at least one observation was accepted.
 
-If no observations are generated, the worker writes no entry and does not advance coverage. A later eligible observer run will see a larger range.
+If no observations are generated, the worker writes no entry and does not advance coverage. A later eligible observer run will see a larger range. Deliberate empty runs back off until another `observeAfterTokens` worth of new source tokens arrives, so they do not re-fire every turn. Observer chunks target a fixed 60,000 estimated tokens, oldest-first, so an oversized uncovered span drains in slices; the oldest entry is always included even if it alone exceeds the target, preventing coverage from stalling. API/stream failures surface as `observer failed` / `observer.stream_error` rather than as an empty run.
 
 ## Reflect/drop/digest flow
 
@@ -211,18 +212,20 @@ Reflector no-output and reflector failure skip same-turn dropper/digest work. Dr
 
 ## Auto-compaction trigger
 
-The auto-compaction trigger runs on `agent_end`.
+The auto-compaction trigger runs on `agent_settled`, after Pi has finished automatic retries, automatic compaction, and queued continuation.
 
 It skips when:
 
 - `passive` is true;
 - compaction is already in flight;
-- the agent end event is a retryable error;
-- raw/source tokens since last compaction are below `compactAfterTokens`;
+- estimated source-entry progress after the latest compaction boundary is below `compactAfterTokens`;
 - Pi is not idle after the deferred check;
-- the threshold is no longer met after the deferred check.
+- the raw threshold is no longer met after the deferred check.
 
-When all checks pass, it calls `ctx.compact()`.
+The count starts at `firstKeptEntryId` when Pi provides that boundary. Memory
+ledger entries and compaction metadata contribute zero. The trigger uses this
+same raw metric before scheduling and in the deferred re-check, then calls
+`ctx.compact()` when all checks pass.
 
 This trigger does not wait for observer, reflector, reflection-digest, or dropper promises. That is intentional: background memory work should never make compaction feel stuck.
 
@@ -238,7 +241,7 @@ It does only deterministic work:
 4. Build a compaction projection from branch entries and `firstKeptEntryId`.
 5. Select the latest valid branch-local reflection digest for that exact projection.
 6. Render the digest, all uncovered reflections after its watermark, and projected observations. If no valid checkpoint exists, render all projected reflections.
-7. Return `{ compaction: { summary, firstKeptEntryId, tokensBefore, details } }` where `details.type` is `om.folded`.
+7. If the summary is empty, return no extension result so Pi uses native compaction. Otherwise return `{ compaction: { summary, firstKeptEntryId, tokensBefore, details } }` where `details.type` is `om.folded`.
 
 It does not:
 
@@ -248,7 +251,7 @@ It does not:
 - wait for worker promises;
 - append ledger entries.
 
-If another compaction hook is already in flight, it returns `{ cancel: true }`.
+If another compaction hook is already in flight, it returns `{ cancel: true }`. Delegating an empty projection is intentionally different: Pi proceeds with its native summarizer so pre-cut context is preserved.
 
 ## Projections
 
@@ -353,7 +356,7 @@ V3 does not use V2 state shapes. Old V2 custom memory entries, old V2 compaction
 
 - The branch-local V3 ledger is the memory source of truth.
 - Pi compaction summaries represent what the agent sees.
-- Compaction is deterministic and model-free.
+- Non-empty V3 compaction projections are deterministic and model-free; empty projections delegate to Pi's native summarizer.
 - Observer input is raw/source entries only.
 - `coversUpToId` is a progress/projection watermark, not provenance.
 - Kept observations and reflections are rendered without paraphrase.
