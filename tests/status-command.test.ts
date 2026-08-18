@@ -172,7 +172,6 @@ describe("V3 /om:status", () => {
 
 		expect(output).toContain("Next compaction:  ~3 / 30 estimated source tokens");
 	});
-	});
 
 	it("shows over-target active observation pool in the Activity section", async () => {
 		// Pad content so the rendered line is exactly 25 tokens (100 chars).
